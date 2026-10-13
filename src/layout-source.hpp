@@ -1,6 +1,6 @@
 /*
-Plugin Name
-Copyright (C) <Year> <Developer> <Email Address>
+HyperDrive Companion
+Copyright (C) 2026 Voidscape Development
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -15,20 +15,12 @@ GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along
 with this program. If not, see <https://www.gnu.org/licenses/>
 */
+#pragma once
 
-#include <obs-module.h>
-#include <plugin-support.h>
+/*
+ * The "HyperDrive Layout" source: pick a layout from a list (and its
+ * options) instead of typing its URL. It shows a private Browser source
+ * pointed at the layout on HyperDrive's web server, 1920x1080 by default.
+ */
 
-OBS_DECLARE_MODULE()
-OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
-
-bool obs_module_load(void)
-{
-	obs_log(LOG_INFO, "plugin loaded successfully (version %s)", PLUGIN_VERSION);
-	return true;
-}
-
-void obs_module_unload(void)
-{
-	obs_log(LOG_INFO, "plugin unloaded");
-}
+void layout_source_register();
