@@ -96,7 +96,7 @@ void HyperDriveClient::connect(const Address &address)
 	disconnect();
 
 	auto socket = std::make_unique<ix::WebSocket>();
-	socket->setUrl(websocketUrl(address) + eio::kSocketPath);
+	socket->setUrl(websocketUrl(connectAddress(address)) + eio::kSocketPath);
 	socket->enableAutomaticReconnection();
 	socket->setMinWaitBetweenReconnectionRetries(1000);
 	socket->setMaxWaitBetweenReconnectionRetries(5000);
@@ -299,7 +299,7 @@ void HyperDriveClient::command(const Request &request, ResultCallback callback)
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (!http_)
 		return;
-	std::string url = baseUrl(address_) + request.path;
+	std::string url = baseUrl(connectAddress(address_)) + request.path;
 	ix::HttpRequestArgsPtr args = requestArgs(*http_, url, request, 3);
 	http_->performRequest(args, [callback](const ix::HttpResponsePtr &response) {
 		if (callback)
@@ -309,7 +309,7 @@ void HyperDriveClient::command(const Request &request, ResultCallback callback)
 
 CommandResult HyperDriveClient::commandSync(const Request &request, int timeoutSecs)
 {
-	std::string url = baseUrl(address()) + request.path;
+	std::string url = baseUrl(connectAddress(address())) + request.path;
 	ix::HttpClient client(false);
 	ix::HttpRequestArgsPtr args = requestArgs(client, url, request, timeoutSecs);
 	return toResult(client.request(url, request.method, args->body, args));

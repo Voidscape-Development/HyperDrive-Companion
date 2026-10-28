@@ -43,6 +43,13 @@ std::string baseUrl(const Address &address);
 /** "ws://host:port" */
 std::string websocketUrl(const Address &address);
 
+/**
+ * The address to connect to: "localhost" as 127.0.0.1. HyperDrive listens on
+ * IPv4 only, and Windows resolves localhost to ::1 first, where a refused
+ * connection takes about 2 s, the whole timeout of a quick request.
+ */
+Address connectAddress(const Address &address);
+
 /** Percent-encodes everything but RFC 3986's unreserved characters. */
 std::string urlEncode(const std::string &value);
 
