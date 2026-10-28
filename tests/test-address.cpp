@@ -51,6 +51,15 @@ TEST(address_ipv6)
 	CHECK_EQ(websocketUrl(bracketed), "ws://[fe80::1]:5600");
 }
 
+TEST(connect_address)
+{
+	CHECK_EQ(connectAddress(parseAddress("localhost", 5500)).host, "127.0.0.1");
+	CHECK_EQ(connectAddress(parseAddress("LocalHost:5600", 5500)).port, 5600);
+	CHECK_EQ(baseUrl(connectAddress(parseAddress("LocalHost:5600", 5500))), "http://127.0.0.1:5600");
+	CHECK_EQ(connectAddress(parseAddress("192.168.1.5", 5500)).host, "192.168.1.5");
+	CHECK_EQ(connectAddress(parseAddress("::1", 5500)).host, "::1");
+}
+
 TEST(url_encode)
 {
 	CHECK_EQ(urlEncode("TV 1"), "TV%201");

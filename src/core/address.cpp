@@ -115,6 +115,17 @@ std::string websocketUrl(const Address &address)
 	return "ws://" + urlHost(address.host) + ":" + std::to_string(address.port);
 }
 
+Address connectAddress(const Address &address)
+{
+	Address out = address;
+	std::string host = address.host;
+	for (char &c : host)
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	if (host == "localhost")
+		out.host = "127.0.0.1";
+	return out;
+}
+
 std::string urlEncode(const std::string &value)
 {
 	static const char hex[] = "0123456789ABCDEF";

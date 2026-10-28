@@ -231,6 +231,9 @@ std::vector<hd::LayoutFolder> Companion::layouts(bool refresh)
 		if (result.ok) {
 			found = hd::parseLayouts(nlohmann::json::parse(result.body, nullptr, false));
 			fromServer = !found.empty();
+		} else {
+			obs_log(LOG_WARNING, "Couldn't get the layouts from HyperDrive (%d): %s", result.status,
+				result.body.substr(0, 200).c_str());
 		}
 	}
 	if (found.empty())
