@@ -33,7 +33,7 @@
     },
     "platformConfig": {
         "macos": {
-            "bundleId": "com.voidscape.hyperdrive-companion"
+            "bundleId": "dev.voidscape.hyperdrive-companion"
         }
     },
     "name": "hyperdrive-companion",
@@ -41,5 +41,5 @@
     "version": "0.1.0",
     "author": "Voidscape Development",
     "website": "https://github.com/Voidscape-Development/HyperDrive-Companion",
-    "email": ""
+    "email": "dev@voidscape.dev"
 }
