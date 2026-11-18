@@ -1,0 +1,18 @@
+{
+    "display_name": "HyperDrive Companion",
+    "id": "73ad07a7-605b-4f72-829e-75000b726650",
+    "version": "0.1.0",
+    "authors": [
+        "Voidscape Development"
+    ],
+    "name": "hyperdrive-companion",
+    "description": "An OBS Studio plugin for HyperDrive, the stream helper for fighting game tournaments.",
+    "long_description": "An OBS Studio plugin for HyperDrive, the stream helper for fighting game tournaments. It runs HyperDrive from inside OBS and ties your scenes to what happens in HyperDrive:",
+    "urls": {
+        "repository": "https://github.com/Voidscape-Development/HyperDrive-Companion",
+        "website": "https://github.com/Voidscape-Development/HyperDrive-Companion",
+        "support": "https://github.com/Voidscape-Development/HyperDrive-Companion/issues"
+    },
+    "has_banner": false,
+    "has_icon": false
+}
