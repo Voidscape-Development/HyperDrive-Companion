@@ -15,7 +15,7 @@ scenes to what happens in HyperDrive:
   starts, the stage is picked, or the score changes.
 - **Hotkeys** for everything the dock does.
 
-It needs OBS Studio 31 or newer, on Windows, macOS or Linux, and HyperDrive running on the same
+It needs OBS Studio 33 or newer, on Windows, macOS or Linux, and HyperDrive running on the same
 computer or on your network.
 
 ## Installing
