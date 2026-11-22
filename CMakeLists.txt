@@ -30,8 +30,15 @@ target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::libobs)
 find_package(obs-frontend-api REQUIRED)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OBS::obs-frontend-api)
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Core Gui)
-target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets)
+find_package(
+  Qt6
+  REQUIRED
+  COMPONENTS Widgets Core Gui Network Svg
+)
+target_link_libraries(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Svg
+)
 target_compile_options(
   ${CMAKE_PROJECT_NAME}
   PRIVATE $<$<C_COMPILER_ID:Clang,AppleClang>:-Wno-quoted-include-in-framework-header -Wno-comma>
@@ -49,10 +56,16 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE $<$<PLATFORM_ID:Windows
 target_sources(
   ${CMAKE_PROJECT_NAME}
   PRIVATE
+    src/bracket/paint.cpp
+    src/bracket/paint.hpp
+    src/bracket/source.cpp
+    src/bracket/source.hpp
     src/companion.cpp
     src/companion.hpp
     src/core/address.cpp
     src/core/address.hpp
+    src/core/bracket-focus.cpp
+    src/core/bracket-focus.hpp
     src/core/commands.cpp
     src/core/commands.hpp
     src/core/config.cpp

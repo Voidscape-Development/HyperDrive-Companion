@@ -24,7 +24,9 @@ add_executable(
   test-triggers.cpp
   test-layouts.cpp
   test-config.cpp
+  test-bracket-focus.cpp
   ${_core}/address.cpp
+  ${_core}/bracket-focus.cpp
   ${_core}/commands.cpp
   ${_core}/config.cpp
   ${_core}/engine-io.cpp

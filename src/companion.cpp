@@ -27,6 +27,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <util/platform.h>
 
+#include "bracket/paint.hpp"
 #include "core/triggers.hpp"
 #include "plugin-support.h"
 #include "text.hpp"
@@ -81,6 +82,7 @@ Companion::Companion() : client_(std::make_unique<hd::HyperDriveClient>())
 	// The client calls back on its threads: hand it to the UI thread,
 	// once for any number of changes in between
 	client_->setStateCallback([this]() {
+		stateVersion_++;
 		if (!stateQueued_.exchange(true))
 			QMetaObject::invokeMethod(this, [this]() { handleState(); }, Qt::QueuedConnection);
 	});
@@ -160,6 +162,8 @@ void Companion::setSettings(const GlobalSettings &settings)
 	if (addressChanged) {
 		client_->connect(address);
 		updateLayoutSources();
+		if (hd::bracket::Assets *assets = hd::bracket::Assets::instance())
+			assets->clear();
 	}
 	if (addressChanged || dirChanged)
 		layouts(true);
