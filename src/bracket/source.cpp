@@ -375,9 +375,10 @@ public:
 		model->signature = hashOf(hd::get(channel, "placement") ? channel["placement"].dump() : "") ^
 				   hashOf(phase + "|" + hd::text(hd::get(channel, "phaseGroup"))) ^
 				   input["players"].size();
-		model->focusKey = hashOf(input["focus"].dump()) ^ hashOf(std::to_string(theme.focusDim)) ^
-				  hashOf(std::to_string(model->maxZoom)) ^ (theme.glows(focus.mode) << 1) ^
-				  options.ignoreFocus ^ hashOf(std::to_string(focus.color));
+		model->focusKey =
+			hashOf(input["focus"].dump() + "|" + std::to_string(theme.focusDim) + "|" +
+			       std::to_string(model->maxZoom) + "|" + std::to_string(theme.glows(focus.mode)) +
+			       std::to_string(options.ignoreFocus) + "|" + std::to_string(focus.color));
 		model->content[keyOf(kLabel, "")] = hashOf(focus.label) ^ themeHash ^ focus.color;
 
 		const json &sets = model->scene.bracket.contains("sets") ? model->scene.bracket["sets"] : json();
