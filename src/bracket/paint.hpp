@@ -62,13 +62,15 @@ public:
 	 * or a null one while it loads (the sprite is then painted again) or
 	 * when there's none.
 	 */
-	QImage image(const std::string &path);
+	QImage image(const std::string &path, QSize *natural = nullptr);
 	/** The fonts to paint with: the theme's, then the layouts' */
 	QStringList families(const std::string &themeFont);
 	/** Changes when an image or the fonts arrive */
 	uint64_t version() const { return version_.load(); }
 	/** HyperDrive's address changed: everything is fetched again */
 	void clear();
+	/** HyperDrive is back: what couldn't be fetched is fetched again */
+	void retry();
 
 private:
 	Assets();
@@ -78,13 +80,18 @@ private:
 		bool done = false;
 		QByteArray data;
 		QImage image;
+		/** Its size before it was made smaller */
+		QSize natural;
 		bool decoded = false;
+		/** HyperDrive couldn't be reached */
+		bool failed = false;
 	};
 	QNetworkAccessManager *network_ = nullptr;
 	std::mutex mutex_;
 	std::map<std::string, Entry> images_;
 	QStringList fontFamilies_;
 	int fontsPending_ = -1;
+	bool fontsFailed_ = false;
 	std::atomic<uint64_t> version_{1};
 };
 

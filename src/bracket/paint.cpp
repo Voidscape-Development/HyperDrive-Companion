@@ -22,7 +22,9 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <functional>
 #include <iterator>
 
+#include <QBuffer>
 #include <QFontDatabase>
+#include <QImageReader>
 #include <QFontMetricsF>
 #include <QLinearGradient>
 #include <QMetaObject>
@@ -52,6 +54,8 @@ const char *kFonts[] = {"layout/fonts/Saira/Saira_Condensed-Bold.ttf",
 			"layout/fonts/Saira/Saira_Condensed-Regular.ttf", "layout/fonts/NotoSans/NotoSans.ttf"};
 
 // Sizes in world pixels, as index.css's
+// The largest image kept, in pixels
+constexpr int kMaxImage = 1024;
 constexpr double kRowH = 40, kRowGap = 2, kScoreW = 52, kFlagW = 26, kFlagH = 26 * 0.7, kIdentifierW = 24;
 
 QColor qcolor(uint32_t c)
@@ -308,7 +312,8 @@ const json *biggestAsset(const json &character)
 
 void drawCharacter(QPainter &p, const QRectF &slot, const QRectF &container, const json &asset)
 {
-	QImage img = image(str(asset, "asset"));
+	QSize natural;
+	QImage img = assets ? assets->image(str(asset, "asset"), &natural) : QImage();
 	if (img.isNull())
 		return;
 	std::string edge = str(asset, "uncropped_edge");
@@ -317,7 +322,7 @@ void drawCharacter(QPainter &p, const QRectF &slot, const QRectF &container, con
 	auto has = [&edge](char c) {
 		return edge.find(c) != std::string::npos;
 	};
-	double w = slot.width(), h = slot.height(), nw = img.width(), nh = img.height();
+	double w = slot.width(), h = slot.height(), nw = natural.width(), nh = natural.height();
 	double rescale = number(get(asset, "rescaling_factor"), 1);
 	// recommendedZoom(), on the whole container
 	double custom = 1;
@@ -341,9 +346,9 @@ void drawCharacter(QPainter &p, const QRectF &slot, const QRectF &container, con
 	else
 		minZoom = custom * proportional * rescale;
 	double zoom = std::max(minZoom, custom * minZoom);
-	auto place = [&](double eye, double size, double natural, char low, char high) {
+	auto place = [&](double eye, double size, double full, char low, char high) {
 		double pos = std::min(-eye * zoom + size * 0.5, has(low) ? size * 0.1 : 0.0);
-		double most = size - natural * zoom;
+		double most = size - full * zoom;
 		return std::max(pos, has(high) ? most - size * 0.1 : most);
 	};
 	const json *eyesight = get(asset, "eyesight");
@@ -553,32 +558,43 @@ void Assets::destroy()
 	assets = nullptr;
 }
 
-QImage Assets::image(const std::string &path)
+QImage Assets::image(const std::string &path, QSize *natural)
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	auto [it, added] = images_.try_emplace(path);
 	Entry &entry = it->second;
 	if (added)
 		QMetaObject::invokeMethod(this, [this, path]() { fetch(path, false); }, Qt::QueuedConnection);
-	if (!entry.done) {
+	// Loading, or HyperDrive couldn't be reached (fetched again once it can)
+	if (!entry.done || entry.failed) {
 		missing = true;
 		return {};
 	}
 	if (!entry.decoded) {
-		entry.image = QImage::fromData(entry.data);
-		// Flags are SVGs: drawn big enough for any zoom
-		QSvgRenderer svg(entry.data);
-		if (entry.image.isNull() && svg.isValid()) {
-			QSize size = svg.defaultSize().scaled(256, 256, Qt::KeepAspectRatio);
-			entry.image = QImage(size, QImage::Format_ARGB32_Premultiplied);
+		// No bigger than any zoom needs: character art can be huge
+		QBuffer buffer(&entry.data);
+		QImageReader reader(&buffer);
+		entry.natural = reader.size();
+		if (entry.natural.width() > kMaxImage || entry.natural.height() > kMaxImage)
+			reader.setScaledSize(entry.natural.scaled(kMaxImage, kMaxImage, Qt::KeepAspectRatio));
+		entry.image = reader.read();
+		// Flags are SVGs
+		if (QSvgRenderer svg(entry.data); entry.image.isNull() && svg.isValid()) {
+			entry.natural = svg.defaultSize();
+			entry.image = QImage(entry.natural.scaled(256, 256, Qt::KeepAspectRatio),
+					     QImage::Format_ARGB32_Premultiplied);
 			entry.image.fill(Qt::transparent);
 			QPainter p(&entry.image);
 			svg.render(&p);
 		}
 		entry.image = entry.image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+		if (!entry.natural.isValid())
+			entry.natural = entry.image.size();
 		entry.data.clear();
 		entry.decoded = true;
 	}
+	if (natural)
+		*natural = entry.natural;
 	return entry.image;
 }
 
@@ -590,7 +606,7 @@ QStringList Assets::families(const std::string &themeFont)
 		for (const char *path : kFonts)
 			QMetaObject::invokeMethod(this, [this, path]() { fetch(path, true); }, Qt::QueuedConnection);
 	}
-	if (fontsPending_ > 0)
+	if (fontsPending_ > 0 || fontsFailed_)
 		missing = true;
 	QStringList list = fontFamilies_;
 	if (!themeFont.empty())
@@ -602,6 +618,18 @@ void Assets::clear()
 {
 	std::lock_guard<std::mutex> lock(mutex_);
 	images_.clear();
+	version_++;
+}
+
+void Assets::retry()
+{
+	std::lock_guard<std::mutex> lock(mutex_);
+	for (auto it = images_.begin(); it != images_.end();)
+		it = it->second.failed ? images_.erase(it) : std::next(it);
+	if (fontsFailed_) {
+		fontsFailed_ = false;
+		fontsPending_ = -1;
+	}
 	version_++;
 }
 
@@ -625,6 +653,8 @@ void Assets::fetch(const std::string &path, bool isFont)
 	connect(reply, &QNetworkReply::finished, this, [this, reply, path, isFont]() {
 		reply->deleteLater();
 		QByteArray data = reply->error() == QNetworkReply::NoError ? reply->readAll() : QByteArray();
+		// No answer at all (not a 404): asked again when HyperDrive is back
+		bool failed = !reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).isValid();
 		std::lock_guard<std::mutex> lock(mutex_);
 		if (isFont) {
 			int id = data.isEmpty() ? -1 : QFontDatabase::addApplicationFontFromData(data);
@@ -632,8 +662,10 @@ void Assets::fetch(const std::string &path, bool isFont)
 				if (!fontFamilies_.contains(family))
 					fontFamilies_ << family;
 			fontsPending_ = std::max(0, fontsPending_ - 1);
+			fontsFailed_ = fontsFailed_ || failed;
 		} else if (auto it = images_.find(path); it != images_.end()) {
 			it->second.done = true;
+			it->second.failed = failed;
 			it->second.data = data;
 		}
 		version_++;

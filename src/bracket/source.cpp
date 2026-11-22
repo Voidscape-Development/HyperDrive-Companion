@@ -29,6 +29,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <mutex>
 #include <optional>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -192,6 +193,8 @@ public:
 		effect_ = gs_effect_create(kEffect, "hyperdrive-bracket.effect", &error);
 		if (!effect_)
 			obs_log(LOG_ERROR, "Bracket focus effect: %s", error ? error : "?");
+		imageParam_ = effect_ ? gs_effect_get_param_by_name(effect_, "image") : nullptr;
+		colorParam_ = effect_ ? gs_effect_get_param_by_name(effect_, "color") : nullptr;
 		bfree(error);
 		world_ = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		obs_leave_graphics();
@@ -231,9 +234,17 @@ public:
 	void update(obs_data_t *settings)
 	{
 		Options o;
-		o.channel = obs_data_get_string(settings, "channel");
-		if (o.channel.empty())
-			o.channel = "main";
+		// As HyperDrive keeps it (HDBracket.ChannelName()): no dots or extra spaces
+		std::string name = obs_data_get_string(settings, "channel");
+		std::replace(name.begin(), name.end(), '.', ' ');
+		std::istringstream words(name);
+		std::string channel;
+		for (std::string word; words >> word;)
+			channel += (channel.empty() ? "" : " ") + word;
+		channel = channel.substr(0, 40);
+		while (!channel.empty() && channel.back() == ' ')
+			channel.pop_back();
+		o.channel = channel.empty() ? "main" : channel;
 		o.title = obs_data_get_bool(settings, "title");
 		o.ignoreFocus = obs_data_get_bool(settings, "ignore_focus");
 		o.maxZoom = static_cast<int>(obs_data_get_int(settings, "max_zoom"));
@@ -459,7 +470,30 @@ public:
 			apply(model, t);
 		if (!model_)
 			return;
+		// Before asking for more, so what was painted counts
+		obs_enter_graphics();
+		upload(t);
+		for (auto &[key, e] : elements_)
+			if (e.old.tex && t - e.fadeStart >= time(kContentFade) && (e.kind != kLabel || t >= labelSwap_))
+				e.old.release();
+		obs_leave_graphics();
+		// The sets come in once they're painted (or after a second)
+		if (introPending_ &&
+		    (t - builtAt_ > 1 || std::all_of(elements_.begin(), elements_.end(), [](const auto &e) {
+			     return e.second.tex.tex || e.second.kind >= kTitle;
+		     })))
+			startIntro(t);
 		request(t);
+		if (orderDirty_) {
+			order_.clear();
+			for (auto &[key, e] : elements_)
+				order_.push_back(&e);
+			std::stable_sort(order_.begin(), order_.end(),
+					 [](const Element *a, const Element *b) { return a->kind < b->kind; });
+			orderDirty_ = false;
+		}
+		frame_ = t;
+		worldDrawn_ = false;
 	}
 
 	double speed() const { return model_ ? model_->scene.theme.speed : 1; }
@@ -720,9 +754,9 @@ public:
 		std::lock_guard<std::mutex> lock(mutex_);
 		// Not the one being painted, or painted and not taken yet
 		auto done = [this](const Job &job) {
-			auto same = [&job](const std::string &key, double scale, size_t content, uint64_t assets) {
+			auto same = [&job](const std::string &key, double scale, size_t content, uint64_t version) {
 				return key == job.key && scale == job.scale && content == job.content &&
-				       assets == job.assets;
+				       version == job.assets;
 			};
 			return same(busy_.key, busy_.scale, busy_.content, busy_.assets) ||
 			       std::any_of(results_.begin(), results_.end(), [&same](const Result &r) {
@@ -799,8 +833,8 @@ public:
 		struct vec4 color;
 		vec4_set(&color, static_cast<float>(alpha), static_cast<float>(alpha), static_cast<float>(alpha),
 			 static_cast<float>(alpha));
-		gs_effect_set_texture(gs_effect_get_param_by_name(effect_, "image"), tex.tex);
-		gs_effect_set_vec4(gs_effect_get_param_by_name(effect_, "color"), &color);
+		gs_effect_set_texture(imageParam_, tex.tex);
+		gs_effect_set_vec4(colorParam_, &color);
 		gs_matrix_push();
 		gs_matrix_translate3f(static_cast<float>(x + tex.at.x * scale),
 				      static_cast<float>(y + tex.at.y * scale), 0);
@@ -820,27 +854,10 @@ public:
 
 	void render()
 	{
-		if (!model_ || !effect_)
+		// Drawn once per frame, however many views show the source
+		if (!model_ || !effect_ || orderDirty_)
 			return;
-		double t = now();
-		upload(t);
-		// The sets come in once they're painted (or after a second)
-		if (introPending_ &&
-		    (t - builtAt_ > 1 || std::all_of(elements_.begin(), elements_.end(), [](const auto &e) {
-			     return e.second.tex.tex || e.second.kind >= kTitle;
-		     })))
-			startIntro(t);
-		for (auto &[key, e] : elements_)
-			if (e.old.tex && t - e.fadeStart >= time(kContentFade) && (e.kind != kLabel || t >= labelSwap_))
-				e.old.release();
-		if (orderDirty_) {
-			order_.clear();
-			for (auto &[key, e] : elements_)
-				order_.push_back(&e);
-			std::stable_sort(order_.begin(), order_.end(),
-					 [](const Element *a, const Element *b) { return a->kind < b->kind; });
-			orderDirty_ = false;
-		}
+		double t = frame_;
 
 		const Model &m = *model_;
 		uint32_t vw = m.width, vh = static_cast<uint32_t>(viewportHeight());
@@ -851,9 +868,11 @@ public:
 		gs_blend_function(GS_BLEND_ONE, GS_BLEND_INVSRCALPHA);
 		gs_technique_t *tech = gs_effect_get_technique(effect_, "Draw");
 
-		// The world, through the viewport
-		gs_texrender_reset(world_);
-		if (gs_texrender_begin(world_, vw, vh)) {
+		// The world, through the viewport: once per frame
+		if (!worldDrawn_)
+			gs_texrender_reset(world_);
+		if (!worldDrawn_ && gs_texrender_begin(world_, vw, vh)) {
+			worldDrawn_ = true;
 			struct vec4 clear;
 			vec4_zero(&clear);
 			gs_clear(GS_CLEAR_COLOR, &clear, 0, 0);
@@ -930,6 +949,9 @@ private:
 	bool introPending_ = false;
 	double builtAt_ = 0;
 	gs_effect_t *effect_ = nullptr;
+	gs_eparam_t *imageParam_ = nullptr, *colorParam_ = nullptr;
+	double frame_ = 0;
+	bool worldDrawn_ = false;
 	gs_texrender_t *world_ = nullptr;
 	View view_, moveFrom_;
 	bool hasView_ = false, moving_ = false, moveEaseOut_ = false;

@@ -90,10 +90,13 @@ Companion::Companion() : client_(std::make_unique<hd::HyperDriveClient>())
 		QMetaObject::invokeMethod(
 			this,
 			[this, status]() {
-				if (status != hd::ConnectionStatus::Connected)
+				if (status != hd::ConnectionStatus::Connected) {
 					lastScores_ = nullptr;
-				else
+				} else {
 					layouts(true);
+					if (hd::bracket::Assets *assets = hd::bracket::Assets::instance())
+						assets->retry();
+				}
 				emit statusChanged(static_cast<int>(status));
 			},
 			Qt::QueuedConnection);
