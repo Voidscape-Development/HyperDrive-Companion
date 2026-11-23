@@ -133,7 +133,7 @@ struct Model {
 	size_t focusKey = 0;
 	json title;
 	uint32_t width = 1920, height = 1080;
-	bool showTitle = true, titleBottom = false, intro = true;
+	bool showTitle = true, titleBottom = false, titleClear = false, intro = true;
 	TitleStyle titleStyle;
 	double titleScale = 1, padding = kPadding, minZoom = 0, captionMargin = kLabelMargin, maxTexture = 4096;
 	std::string easing;
@@ -393,6 +393,7 @@ public:
 		model->titleBottom = titlePlace.rfind("bottom", 0) == 0;
 		model->titleStyle = {s.value("title_logo", true), s.value("title_style", "bar") == "floating",
 				     CaptionPlace::parse(titlePlace).column, s.value("title_opacity", 100) / 100.0};
+		model->titleClear = model->titleStyle.fit && s.value("title_clear", true);
 		model->titleScale = std::max(10, s.value("title_size", 100)) / 100.0;
 		model->caption = CaptionPlace::parse(s.value("caption_position", "bottom_center"));
 		model->captionMargin = s.value("caption_margin", kLabelMargin);
@@ -732,9 +733,11 @@ public:
 
 		// The camera: from wherever it is, even halfway through a move
 		double vw = m.width, vh = viewportHeight();
-		View to = fitView(f.box, vw, vh,
-				  shown ? captionRoom(m.caption, m.captionWidth, m.captionMargin) : Room{}, m.maxZoom,
-				  m.padding);
+		Room room = shown ? captionRoom(m.caption, m.captionWidth, m.captionMargin) : Room{};
+		// A floating title's side kept clear, if asked to
+		double &titleSide = m.titleBottom ? room.bottom : room.top;
+		titleSide = m.titleClear ? std::max(titleSide, m.titleHeight()) : titleSide;
+		View to = fitView(f.box, vw, vh, room, m.maxZoom, m.padding);
 		to.scale = std::max(to.scale, std::min(m.minZoom, m.maxZoom));
 		double duration = time(theme.focusTime);
 		if (!animate || !hasView_ || duration < 0.02) {
@@ -1095,8 +1098,8 @@ void update(void *data, obs_data_t *settings)
 void getDefaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "channel", "main");
-	for (const char *key : {"title", "title_logo", "title_tournament", "title_event", "title_phase", "title_group",
-				"intro", "standings", "byes"})
+	for (const char *key : {"title", "title_clear", "title_logo", "title_tournament", "title_event", "title_phase",
+				"title_group", "intro", "standings", "byes"})
 		obs_data_set_default_bool(settings, key, true);
 	for (const char *key : kThemeChoices)
 		obs_data_set_default_string(settings, key, "theme");
@@ -1218,6 +1221,8 @@ obs_properties_t *getProperties(void *data)
 
 	obs_properties_t *title = obs_properties_create();
 	addList(title, "title_style", "TitleStyle", {"bar", "floating"});
+	obs_property_set_long_description(obs_properties_add_bool(title, "title_clear", text("TitleClear")),
+					  text("TitleClear.Help"));
 	obs_property_set_long_description(
 		addList(title, "title_position", "TitlePosition",
 			{"top_left", "top_center", "top_right", "bottom_left", "bottom_center", "bottom_right"},
