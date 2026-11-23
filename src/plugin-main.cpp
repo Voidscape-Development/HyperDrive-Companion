@@ -22,6 +22,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <ixwebsocket/IXNetSystem.h>
 
+#include "bracket/source.hpp"
 #include "companion.hpp"
 #include "hotkeys.hpp"
 #include "layout-source.hpp"
@@ -88,6 +89,7 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		break;
 	case OBS_FRONTEND_EVENT_EXIT:
 		// Before Qt goes away
+		bracket_source_shutdown();
 		hotkeys_unregister();
 		Companion::destroy();
 		break;
@@ -102,6 +104,7 @@ bool obs_module_load(void)
 {
 	ix::initNetSystem();
 	layout_source_register();
+	bracket_source_register();
 	Companion::create();
 	hotkeys_register();
 
@@ -121,6 +124,7 @@ void obs_module_unload(void)
 {
 	obs_frontend_remove_event_callback(onFrontendEvent, nullptr);
 	obs_frontend_remove_save_callback(onSave, nullptr);
+	bracket_source_shutdown();
 	hotkeys_unregister();
 	Companion::destroy();
 	ix::uninitNetSystem();

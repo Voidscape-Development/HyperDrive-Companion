@@ -59,6 +59,8 @@ public:
 	static void destroy();
 
 	hd::HyperDriveClient &client() { return *client_; }
+	/** Changes with the state, from any thread (for the bracket focus sources) */
+	uint64_t stateVersion() const { return stateVersion_.load(); }
 
 	const GlobalSettings &settings() const { return settings_; }
 	void setSettings(const GlobalSettings &settings);
@@ -116,6 +118,7 @@ private:
 	std::atomic<int> hotkeyScoreboard_{1};
 
 	std::atomic<bool> stateQueued_{false};
+	std::atomic<uint64_t> stateVersion_{0};
 	/** "score" of the last state seen, for the automation */
 	nlohmann::json lastScores_;
 	QTimer sceneTimer_;

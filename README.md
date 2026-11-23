@@ -9,6 +9,8 @@ scenes to what happens in HyperDrive:
   HyperDrive.
 - **A HyperDrive Layout source**: pick a layout and its page from a list, plus its options
   (scoreboard, display groups, bracket channel). No more typing URLs or browsing for `.html` files.
+- **A HyperDrive Bracket Focus source**: HyperDrive's zooming bracket (`bracket_focus`), drawn by
+  OBS itself instead of a browser, so its camera moves stay smooth on any bracket.
 - **Scenes › Layouts**: when a scene goes live, show or hide HyperDrive layouts with their
   animations (HyperDrive's Display Controls).
 - **Scene automation**: switch scenes when a set is won, a new set is loaded, the stage strike
@@ -71,6 +73,30 @@ HyperDrive lists its layouts at `GET /layouts` (added in
 HyperDrive, set its folder in **Tools › HyperDrive Companion › Connection** and the plugin lists
 the layouts from there.
 
+### HyperDrive Bracket Focus source
+
+The `bracket_focus` layout, drawn natively: the bracket of a channel, zoomed to what's in focus
+(from the dock's Bracket tab, the hotkeys, HyperDrive's bracket widget, its web page or a Stream
+Deck), the rest dimmed, with the outlines, the caption saying what's in focus and the title bar. It
+follows HyperDrive's layout theme (colors, font, corners, what's displayed, focus glow, zoom time
+and maximum zoom, animation speed).
+
+| Option | |
+| - | - |
+| Bracket channel | The channel shown (`main` by default) |
+| Title bar | The tournament, event, phase and pool above the bracket (`index.html`), or not (`no_title.html`) |
+| Always show the whole bracket | Ignores the focus (`?ignore_focus=1`) |
+| Focus caption position | Where the caption saying what's in focus goes: any of the 8 places along the edges (bottom center by default). The camera keeps that side free |
+| Maximum zoom | How big a set is drawn when zoomed to, at most; 0 for the layout theme's |
+| Width, height | 1920x1080 by default |
+
+The camera moves, fades and outlines run on OBS's graphics thread every frame. Each set, round name
+and line is a picture painted on a thread of the source's own at the size the camera needs (ahead
+of it while it moves, sharp once it stops), so painting never holds a frame up. It needs a
+HyperDrive that places the bracket for it (`bracket.channels.<channel>.placement`); with an older
+one, the source shows only its title bar. Images (flags, avatars, characters, the logo) and the
+layouts' fonts come from HyperDrive's web server.
+
 ### Scenes › Layouts
 
 In **Tools › HyperDrive Companion › Scenes › Layouts**, add rows like
@@ -117,10 +143,11 @@ plugin do:
 
 | | |
 | - | - |
-| `src/core/` | Everything that doesn't need OBS or Qt, unit tested: the Engine.IO/socket.io packets, the state and what's read from it, the links, the trigger detection, the layout list, the saved config |
+| `src/core/` | Everything that doesn't need OBS or Qt, unit tested: the Engine.IO/socket.io packets, the state and what's read from it, the links, the trigger detection, the layout list, the saved config, the bracket focus's theme, focus and camera |
 | `src/net/` | The connection, with [IXWebSocket](https://github.com/machinezone/IXWebSocket) |
 | `src/companion.*` | The hub on OBS's UI thread: the connection, the settings, the layout list and the automation |
 | `src/layout-source.*` | The HyperDrive Layout source, wrapping a private Browser source |
+| `src/bracket/` | The HyperDrive Bracket Focus source (`source.*`) and its pieces' painting (`paint.*`); what it shows (placement, theme, focus, camera) is in `src/core/bracket-focus.*` |
 | `src/hotkeys.*` | The hotkeys |
 | `src/ui/` | The dock and the settings dialog (Qt) |
 | `src/plugin-main.cpp` | Registers everything, and saves to/loads from the scene collection |
