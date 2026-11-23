@@ -78,7 +78,15 @@ Box Line::bounds() const
 		Box point{points[i][0], points[i][1], 0, 0};
 		box = i ? unite(box, point) : point;
 	}
+	if (!label.empty() && !points.empty())
+		box = unite(box, {labelAt()[0], labelAt()[1] - 15, label.size() * 12.0 + 24, 30});
 	return box;
+}
+
+std::array<double, 2> Line::labelAt() const
+{
+	return points.empty() ? std::array<double, 2>{0, 0}
+			      : std::array<double, 2>{points.back()[0] + 10, points.back()[1]};
 }
 
 std::optional<Placement> parsePlacement(const json *placement)
@@ -93,7 +101,11 @@ std::optional<Placement> parsePlacement(const json *placement)
 		placed.standings = boxFrom(*standings);
 	if (const json *lines = get(*placement, "lines"); lines && lines->is_array()) {
 		for (const json &l : *lines) {
-			Line line{text(get(l, "from")), text(get(l, "to")), {}, truthy(get(l, "arrow"))};
+			Line line{text(get(l, "from")),
+				  text(get(l, "to")),
+				  {},
+				  truthy(get(l, "arrow")),
+				  text(get(l, "label"))};
 			if (const json *points = get(l, "points"); points && points->is_array())
 				for (const json &p : *points)
 					if (p.is_array() && p.size() == 2)
@@ -289,35 +301,36 @@ CaptionPlace CaptionPlace::parse(const std::string &value)
 	return place;
 }
 
-Room captionRoom(const CaptionPlace &place, double width)
+Room captionRoom(const CaptionPlace &place, double width, double margin)
 {
 	Room room;
 	if (place.row == 0)
-		room.top = kLabelRoom;
+		room.top = kLabelRoom + margin - kLabelMargin;
 	else if (place.row == 2)
-		room.bottom = kLabelRoom;
+		room.bottom = kLabelRoom + margin - kLabelMargin;
 	else if (place.column == 0)
-		room.left = width + kLabelMargin + 8;
+		room.left = width + margin + 8;
 	else
-		room.right = width + kLabelMargin + 8;
+		room.right = width + margin + 8;
 	return room;
 }
 
-std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height)
+std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height,
+				double margin)
 {
-	double x = place.column == 0   ? viewport.x + kLabelMargin + width / 2
-		   : place.column == 2 ? viewport.x + viewport.w - kLabelMargin - width / 2
+	double x = place.column == 0   ? viewport.x + margin + width / 2
+		   : place.column == 2 ? viewport.x + viewport.w - margin - width / 2
 				       : viewport.x + viewport.w / 2;
-	double y = place.row == 0   ? viewport.y + kLabelMargin + height
-		   : place.row == 2 ? viewport.y + viewport.h - kLabelMargin
+	double y = place.row == 0   ? viewport.y + margin + height
+		   : place.row == 2 ? viewport.y + viewport.h - margin
 				    : viewport.y + (viewport.h + height) / 2;
 	return {x, y};
 }
 
-View fitView(const Box &target, double width, double height, const Room &room, double maxZoom)
+View fitView(const Box &target, double width, double height, const Room &room, double maxZoom, double padding)
 {
 	double w = width - room.left - room.right, h = height - room.top - room.bottom;
-	double scale = std::min({(w - kPadding * 2) / target.w, (h - kPadding * 2) / target.h, maxZoom});
+	double scale = std::min({(w - padding * 2) / target.w, (h - padding * 2) / target.h, maxZoom});
 	return {target.x + target.w / 2, target.y + target.h / 2, room.left + w / 2, room.top + h / 2,
 		std::max(scale, 1e-4)};
 }

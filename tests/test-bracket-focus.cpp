@@ -31,7 +31,8 @@ static json placementJson()
 		"headers": {"w:1": {"x": 40, "y": 40, "w": 380, "h": 44}, "w:2": {"x": 520, "y": 40, "w": 380, "h": 44}},
 		"byes": {}, "standings": null,
 		"lines": [{"from": "a", "to": "c", "points": [[420, 137], [470, 137], [470, 190], [520, 190]]},
-		          {"from": "c", "to": null, "points": [[900, 190], [945, 190]], "arrow": true}],
+		          {"from": "c", "to": null, "points": [[900, 190], [945, 190]], "arrow": true,
+		           "label": "Top 8"}],
 		"width": 940, "height": 324
 	})");
 }
@@ -52,6 +53,9 @@ TEST(placement_parses)
 	CHECK_EQ(placed->lines.size(), 2u);
 	CHECK_EQ(placed->lines[1].to, std::string());
 	CHECK(placed->lines[1].arrow);
+	// Its label after the tip, as wide as 5 letters in a chip
+	CHECK_EQ(placed->lines[1].label, std::string("Top 8"));
+	CHECK(placed->lines[1].bounds() == (Box{900, 175, 139, 30}));
 	CHECK(placed->lines[0].bounds() == (Box{420, 137, 100, 53}));
 	CHECK(!placed->standings.has_value());
 	CHECK_EQ(placed->width, 940.0);
@@ -153,6 +157,8 @@ TEST(camera)
 	CHECK_EQ(v.ax, 960.0);
 	// Capped at the max zoom
 	CHECK_EQ(fitView({0, 0, 100, 50}, 1920, 1080, {0, kLabelRoom, 0, 0}, 2).scale, 2.0);
+	// No padding: edge to edge
+	CHECK_EQ(fitView({0, 0, 1000, 500}, 1920, 1080, {}, 5, 0).scale, 1.92);
 	Box shown = v.shows(1920, 1080);
 	CHECK(std::abs(shown.x + shown.w / 2 - 500) < 1e-9);
 
@@ -200,4 +206,9 @@ TEST(caption_places)
 	at = captionAt(CaptionPlace::parse("middle_right"), page, 300, 50);
 	CHECK_EQ(at[0], 1920 - kLabelMargin - 150);
 	CHECK_EQ(at[1], 100 + (980 + 50) / 2.0);
+
+	// Another margin: from the edges, and the room for it
+	CHECK_EQ(captionAt(CaptionPlace::parse("bottom_center"), page, 300, 50, 100)[1], 980.0);
+	CHECK_EQ(captionRoom(CaptionPlace::parse("bottom_center"), 300, 100).bottom, kLabelRoom + 100 - kLabelMargin);
+	CHECK_EQ(captionRoom(CaptionPlace::parse("middle_left"), 300, 100).left, 408.0);
 }

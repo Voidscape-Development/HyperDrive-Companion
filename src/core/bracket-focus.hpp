@@ -59,7 +59,12 @@ struct Line {
 	std::string to;
 	std::vector<std::array<double, 2>> points;
 	bool arrow = false;
+	/** An arrow's: where the players going on go, after its tip */
+	std::string label;
+	/** Its points, and its label (20px text, about 12px a letter, in a chip) */
 	Box bounds() const;
+	/** Where its label goes: (x, middle) */
+	std::array<double, 2> labelAt() const;
 };
 
 struct Placement {
@@ -180,13 +185,15 @@ struct Room {
  * The room for a caption (as wide as width) at a place: above or under what's
  * in focus at the top or the bottom, beside it in the middle
  */
-Room captionRoom(const CaptionPlace &place, double width);
+Room captionRoom(const CaptionPlace &place, double width, double margin = kLabelMargin);
 
 /** Where a caption of a size goes in a viewport (page pixels): its bottom center */
-std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height);
+std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height,
+				double margin = kLabelMargin);
 
-/** The view of a box in a viewport, leaving room free */
-View fitView(const Box &target, double width, double height, const Room &room, double maxZoom);
+/** The view of a box in a viewport, leaving room free, and padding around it */
+View fitView(const Box &target, double width, double height, const Room &room, double maxZoom,
+	     double padding = kPadding);
 /**
  * The view t (0 to 1) of the way from a to b: the scale changes
  * geometrically, around the one point that stays put on screen, so zooming

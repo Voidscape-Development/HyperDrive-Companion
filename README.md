@@ -79,16 +79,30 @@ The `bracket_focus` layout, drawn natively: the bracket of a channel, zoomed to 
 (from the dock's Bracket tab, the hotkeys, HyperDrive's bracket widget, its web page or a Stream
 Deck), the rest dimmed, with the outlines, the caption saying what's in focus and the title bar. It
 follows HyperDrive's layout theme (colors, font, corners, what's displayed, focus glow, zoom time
-and maximum zoom, animation speed).
+and maximum zoom, animation speed), unless the source overrides it.
 
 | Option | |
 | - | - |
 | Bracket channel | The channel shown (`main` by default) |
-| Title bar | The tournament, event, phase and pool above the bracket (`index.html`), or not (`no_title.html`) |
 | Always show the whole bracket | Ignores the focus (`?ignore_focus=1`) |
-| Focus caption position | Where the caption saying what's in focus goes: any of the 8 places along the edges (bottom center by default). The camera keeps that side free |
+| Width, height | 1920x1080 by default; **Use canvas size** sets them to OBS's canvas |
+| **Camera** | |
 | Maximum zoom | How big a set is drawn when zoomed to, at most; 0 for the layout theme's |
-| Width, height | 1920x1080 by default |
+| Minimum zoom | How small the bracket is drawn, at least (a big bracket stays readable, cropped); 0 for none |
+| Room around what's in focus | 60px by default |
+| When nothing is in focus | Show the whole bracket, or stay where it was |
+| Camera movement | Smooth, gentle, fast then slow, or steady |
+| **Override layout theme** | |
+| Out of focus opacity, camera move time, animation speed | -1 for the layout theme's |
+| Focus caption, outline, dim losers, round names, pending sets' sources, avatars, characters, flags, seeds | The layout theme's, shown or hidden |
+| Custom focus color | One focus color for every mode |
+| **Look** | |
+| Background | None (transparent), the layout theme's, or a color |
+| Intro animation, standings, byes | Shown by default |
+| Focus caption position | Where the caption saying what's in focus goes: any of the 8 places along the edges (bottom center by default). The camera keeps that side free |
+| Caption margin | From the edge, 32px by default |
+| Largest picture size | 2048, 4096 (default) or 8192px: less video memory, or sharper close-ups |
+| **Title bar** | The logo, tournament, event, phase and pool above the bracket (`index.html`), or not (`no_title.html`), with any of its fields, 50 to 200% the size, and its background's opacity. A bar takes the top or bottom of the page; floating, it's as wide as what it shows, in a corner over the bracket, which takes the whole page (as with no title); the camera frames what's in focus below or beside its corner when it would be under it, unless asked not to |
 
 The camera moves, fades and outlines run on OBS's graphics thread every frame. Each set, round name
 and line is a picture painted on a thread of the source's own at the size the camera needs (ahead

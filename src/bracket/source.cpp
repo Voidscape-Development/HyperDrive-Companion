@@ -50,7 +50,44 @@ using json = nlohmann::json;
 constexpr const char *kId = "hyperdrive_bracket_focus";
 // The layout's: sets come in over STAGGER_TIME at most, a content change
 // fades over HD.set()'s time
-constexpr double kStaggerTime = 1.5, kSetIn = 0.4, kContentFade = 0.5, kMaxTexture = 4096;
+constexpr double kStaggerTime = 1.5, kSetIn = 0.4, kContentFade = 0.5;
+// The settings that show, hide or keep the theme's choice
+constexpr const char *kThemeChoices[] = {"show_caption", "glow",      "dim_losers", "round_names", "pending",
+					 "avatar",       "character", "flags",      "seed"};
+
+/** An OBS color (0xAABBGGRR) as 0xAARRGGBB */
+uint32_t argb(uint32_t c)
+{
+	return (c & 0xff00ff00) | ((c & 0xff) << 16) | ((c >> 16) & 0xff);
+}
+
+/** The source's settings that change the layout theme's */
+void overrideTheme(Theme &t, const json &s)
+{
+	auto choice = [&s](const char *key, std::initializer_list<bool *> values) {
+		std::string v = s.value(key, "theme");
+		for (bool *b : values)
+			*b = v == "theme" ? *b : v == "on";
+	};
+	choice("show_caption", {&t.focusLabel});
+	choice("dim_losers", {&t.dimLosers});
+	choice("round_names", {&t.roundNames});
+	choice("pending", {&t.pending});
+	choice("avatar", {&t.avatar});
+	choice("character", {&t.character});
+	choice("flags", {&t.countryFlag, &t.stateFlag});
+	choice("seed", {&t.seed});
+	if (int dim = s.value("focus_dim", -1); dim >= 0)
+		t.focusDim = dim / 100.0;
+	if (int ms = s.value("focus_time", -1); ms >= 0)
+		t.focusTime = ms / 1000.0;
+	if (int speed = s.value("speed", -1); speed >= 0)
+		t.speed = speed / 100.0;
+	if (s.value("custom_focus_color", false)) {
+		t.focus = argb(s.value("focus_color", 0u)) | 0xff000000;
+		t.glowColors.clear();
+	}
+}
 
 // Draws a premultiplied picture, faded by color (its opacity in each channel)
 constexpr const char *kEffect = R"(
@@ -96,20 +133,28 @@ struct Model {
 	size_t focusKey = 0;
 	json title;
 	uint32_t width = 1920, height = 1080;
-	bool showTitle = true;
+	bool showTitle = true, titleBottom = false, titleClear = false, intro = true;
+	TitleStyle titleStyle;
+	double titleScale = 1, padding = kPadding, minZoom = 0, captionMargin = kLabelMargin, maxTexture = 4096;
+	std::string easing;
+	/** Under everything, 0xAARRGGBB (0: none) */
+	uint32_t background = 0;
+	double titleHeight() const { return showTitle ? kTitleHeight * titleScale : 0; }
+	/** What the title bar takes from the bracket: nothing when it floats over it */
+	double titleRoom() const { return titleStyle.fit ? 0 : titleHeight(); }
 	/** The focus caption: where it goes, and its width (for the camera's room) */
 	CaptionPlace caption;
 	double captionWidth = 0;
+	/** A floating title's picture, in its own pixels (before titleScale) */
+	Box titleBox;
 	/** What each piece shows, by key */
 	std::map<std::string, size_t> content;
 };
 
 struct Options {
 	std::string channel = "main";
-	bool title = true, ignoreFocus = false;
-	std::string caption = "bottom_center";
-	int maxZoom = 0;
-	uint32_t width = 1920, height = 1080;
+	/** All the settings, defaults included */
+	json s = json::object();
 };
 
 /** A value fading from one to another */
@@ -249,22 +294,18 @@ public:
 		while (!channel.empty() && channel.back() == ' ')
 			channel.pop_back();
 		o.channel = channel.empty() ? "main" : channel;
-		o.title = obs_data_get_bool(settings, "title");
-		o.caption = obs_data_get_string(settings, "caption_position");
-		o.ignoreFocus = obs_data_get_bool(settings, "ignore_focus");
-		o.maxZoom = static_cast<int>(obs_data_get_int(settings, "max_zoom"));
-		o.width = static_cast<uint32_t>(std::max<long long>(1, obs_data_get_int(settings, "width")));
-		o.height = static_cast<uint32_t>(std::max<long long>(1, obs_data_get_int(settings, "height")));
+		o.s = json::parse(obs_data_get_json_with_defaults(settings), nullptr, false);
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			options_ = o;
 			dirty_ = true;
 		}
-		width_ = o.width;
-		height_ = o.height;
+		width_ = static_cast<uint32_t>(std::max<long long>(1, obs_data_get_int(settings, "width")));
+		height_ = static_cast<uint32_t>(std::max<long long>(1, obs_data_get_int(settings, "height")));
 		wake_.notify_all();
 	}
 
+	obs_source_t *self() const { return self_; }
 	uint32_t width() const { return width_; }
 	uint32_t height() const { return height_; }
 
@@ -311,9 +352,7 @@ public:
 	/** The model, when what it's made from changed */
 	void build(Companion &companion, const Options &options)
 	{
-		json input = {{"options",
-			       {options.channel, options.title, options.ignoreFocus, options.maxZoom, options.width,
-				options.height}}};
+		json input = {{"options", options.s}, {"name", options.channel}};
 		companion.client().withState([&](const json &state) {
 			const json *channel = hd::get(state, "bracket.channels");
 			channel = channel && channel->is_object() && channel->contains(options.channel)
@@ -337,29 +376,54 @@ public:
 		lastInput_ = input;
 
 		auto model = std::make_shared<Model>();
-		const json &channel = input["channel"];
+		const json &s = options.s, &channel = input["channel"];
 		std::optional<Placement> placed = parsePlacement(hd::get(channel, "placement"));
+		bool showStandings = s.value("standings", true), showByes = s.value("byes", true);
+		if (placed && !showStandings)
+			placed->standings.reset();
+		if (placed && !showByes)
+			placed->byes.clear();
 		if (!placed && !channel.is_null() && !warned_) {
 			warned_ = true;
 			obs_log(LOG_WARNING, "\"%s\": this HyperDrive doesn't place the bracket for OBS: update it",
 				obs_source_get_name(self_));
 		}
-		model->width = options.width;
-		model->height = options.height;
-		model->showTitle = options.title;
-		model->caption = CaptionPlace::parse(options.caption);
+		model->width = static_cast<uint32_t>(std::max(1, s.value("width", 1920)));
+		model->height = static_cast<uint32_t>(std::max(1, s.value("height", 1080)));
+		model->showTitle = s.value("title", true);
+		std::string titlePlace = s.value("title_position", "top_left");
+		model->titleBottom = titlePlace.rfind("bottom", 0) == 0;
+		model->titleStyle = {s.value("title_logo", true), s.value("title_style", "bar") == "floating",
+				     CaptionPlace::parse(titlePlace).column, s.value("title_opacity", 100) / 100.0};
+		model->titleClear = model->titleStyle.fit && s.value("title_clear", true);
+		model->titleScale = std::max(10, s.value("title_size", 100)) / 100.0;
+		model->caption = CaptionPlace::parse(s.value("caption_position", "bottom_center"));
+		model->captionMargin = s.value("caption_margin", kLabelMargin);
+		model->padding = s.value("focus_padding", kPadding);
+		model->minZoom = s.value("min_zoom", 0) / 100.0;
+		model->easing = s.value("easing", "smooth");
+		model->intro = s.value("intro", true);
+		model->maxTexture = s.value("max_texture", 4096);
 		model->scene.bracket = channel.contains("bracket") ? channel["bracket"] : json::object();
 		model->scene.players = input["players"];
 		model->scene.theme = parseTheme(&input["theme"]);
+		overrideTheme(model->scene.theme, s);
+		std::string background = s.value("background", "none");
+		model->background = background == "theme"    ? model->scene.theme.background
+				    : background == "custom" ? argb(s.value("background_color", 0u))
+							     : 0;
 		const json &info = input["info"];
 		std::string phase = hd::text(hd::get(channel, "phase"));
 		model->title = {{"tournament", hd::text(hd::get(info, "tournamentName"))},
 				{"event", hd::text(hd::get(info, "eventName"))},
 				{"phase", phase.empty() ? hd::text(hd::get(model->scene.bracket, "name")) : phase},
 				{"group", hd::text(hd::get(channel, "phaseGroup"))}};
+		for (auto &item : model->title.items())
+			if (!s.value("title_" + item.key(), true))
+				item.value() = "";
 		const Theme &theme = model->scene.theme;
-		size_t themeHash = hashOf(input["theme"].dump());
-		model->content[keyOf(kTitle, "")] = hashOf(model->title.dump()) ^ themeHash ^ options.width;
+		size_t themeHash = hashOf(input["theme"].dump() + s.dump());
+		model->content[keyOf(kTitle, "")] = hashOf(model->title.dump()) ^ themeHash;
 		if (placed) {
 			model->placed = *placed;
 			model->world = {0, 0, placed->width, placed->height};
@@ -369,25 +433,38 @@ public:
 								    standings.at.h + 32});
 			}
 		}
-		model->focus = computeFocus(options.ignoreFocus ? nullptr : &input["focus"], &model->scene.bracket,
-					    model->placed, theme, model->world);
+		model->focus = computeFocus(s.value("ignore_focus", false) ? nullptr : &input["focus"],
+					    &model->scene.bracket, model->placed, theme, model->world);
+		if (std::string glow = s.value("glow", "theme"); glow != "theme")
+			model->focus.glow = glow == "on";
 		const Focus &focus = model->focus;
-		model->maxZoom = options.maxZoom > 0 ? options.maxZoom / 100.0 : theme.maxZoom;
+		int maxZoom = s.value("max_zoom", 0);
+		model->maxZoom = maxZoom > 0 ? maxZoom / 100.0 : theme.maxZoom;
 		if (focus.mode == "player")
 			model->scene.focusPlayer = focus.player;
 		model->scene.focusColor = focus.color;
 
 		// HDBracket.Signature(): the shape, not the scores or the players
 		model->signature = hashOf(hd::get(channel, "placement") ? channel["placement"].dump() : "") ^
-				   hashOf(phase + "|" + hd::text(hd::get(channel, "phaseGroup"))) ^
+				   hashOf(phase + "|" + hd::text(hd::get(channel, "phaseGroup")) + "|" +
+					  std::to_string(showStandings) + std::to_string(showByes)) ^
 				   input["players"].size();
-		model->focusKey =
-			hashOf(input["focus"].dump() + "|" + std::to_string(theme.focusDim) + "|" +
-			       std::to_string(model->maxZoom) + "|" + std::to_string(theme.glows(focus.mode)) +
-			       std::to_string(options.ignoreFocus) + "|" + std::to_string(focus.color));
+		// Nothing in focus: the camera stays where it was, if asked to
+		if (heldSignature_ != model->signature)
+			held_.reset();
+		if (focus.active)
+			held_ = focus.box;
+		heldSignature_ = model->signature;
+		if (!focus.active && held_ && s.value("idle", "whole") == "hold" && !s.value("ignore_focus", false))
+			model->focus.box = *held_;
+		model->focusKey = hashOf(input["focus"].dump() + "|" + s.dump() + "|" + input["theme"].dump());
 		model->content[keyOf(kLabel, "")] = hashOf(focus.label) ^ themeHash ^ focus.color;
 		if (!focus.label.empty())
 			model->captionWidth = paintLabel(focus.label, theme, focus.color, 0.05).at.w;
+		if (model->titleClear)
+			model->titleBox = paintTitle(model->title, theme, model->width / model->titleScale, 0.05,
+						     model->titleStyle)
+						  .at;
 
 		const json &sets = model->scene.bracket.contains("sets") ? model->scene.bracket["sets"] : json();
 		const json &players = model->scene.players;
@@ -457,7 +534,7 @@ public:
 		case kBar:
 			return paintRing(m.placed.headers.at(job.id), theme, m.focus.color, job.scale, true);
 		case kTitle:
-			return paintTitle(m.title, theme, m.width, job.scale);
+			return paintTitle(m.title, theme, m.width / m.titleScale, job.scale, m.titleStyle);
 		case kLabel:
 			return paintLabel(m.focus.label, theme, m.focus.color, job.scale);
 		}
@@ -508,14 +585,19 @@ public:
 	double speed() const { return model_ ? model_->scene.theme.speed : 1; }
 	double time(double seconds) const { return speed() > 0 ? seconds / speed() : 0; }
 
-	double viewportHeight() const { return std::max(1.0, model_->height - (model_->showTitle ? kTitleHeight : 0)); }
+	double viewportHeight() const { return std::max(1.0, model_->height - model_->titleRoom()); }
 
 	View viewNow(double t) const
 	{
 		if (!moving_ || t >= moveStart_ + moveTime_)
 			return view_;
 		double k = std::max(0.0, (t - moveStart_) / moveTime_);
-		return between(moveFrom_, view_, moveEaseOut_ ? easeOut(k) : easeInOut(k));
+		const std::string &e = model_->easing;
+		k = moveEaseOut_ || e == "out" ? easeOut(k)
+		    : e == "sine"              ? easeSine(k)
+		    : e == "linear"            ? k
+					       : easeInOut(k);
+		return between(moveFrom_, view_, k);
 	}
 
 	/** The view at rest, on whole pixels so the pictures are sharp */
@@ -554,10 +636,10 @@ public:
 	void apply(const std::shared_ptr<const Model> &model, double t)
 	{
 		bool rebuild = !model_ || model->signature != model_->signature;
-		bool resized = model_ &&
-			       (model->width != model_->width || model->height != model_->height ||
-				model->showTitle != model_->showTitle || model->caption.row != model_->caption.row ||
-				model->caption.column != model_->caption.column);
+		bool resized = model_ && (model->width != model_->width || model->height != model_->height ||
+					  model->titleRoom() != model_->titleRoom() ||
+					  model->caption.row != model_->caption.row ||
+					  model->caption.column != model_->caption.column);
 		bool refocus = rebuild || resized || model->focusKey != model_->focusKey;
 		bool animate = model_ && !rebuild && !resized;
 		model_ = model;
@@ -578,7 +660,7 @@ public:
 			introPending_ = true;
 			builtAt_ = t;
 		}
-		add(kTitle, "", {0, 0, static_cast<double>(model->width), kTitleHeight});
+		add(kTitle, "", {0, 0, model->width / model->titleScale, kTitleHeight});
 		add(kLabel, "", {});
 		for (auto &[key, e] : elements_) {
 			auto it = model->content.find(key);
@@ -657,7 +739,31 @@ public:
 
 		// The camera: from wherever it is, even halfway through a move
 		double vw = m.width, vh = viewportHeight();
-		View to = fitView(f.box, vw, vh, shown ? captionRoom(m.caption, m.captionWidth) : Room{}, m.maxZoom);
+		auto fit = [&](const Room &room) {
+			View v = fitView(f.box, vw, vh, room, m.maxZoom, m.padding);
+			v.scale = std::max(v.scale, std::min(m.minZoom, m.maxZoom));
+			return v;
+		};
+		Room room = shown ? captionRoom(m.caption, m.captionWidth, m.captionMargin) : Room{};
+		View to = fit(room);
+		// A floating title's corner kept clear, if asked to: what's in focus
+		// goes under (or over) it, or beside it, whichever is bigger
+		double k = m.titleScale, th = m.titleHeight();
+		Box title{m.titleBox.x * k, m.titleBottom ? vh - th : 0, m.titleBox.w * k, th};
+		Box onScreen{to.ax + (f.box.x - to.cx) * to.scale, to.ay + (f.box.y - to.cy) * to.scale,
+			     f.box.w * to.scale, f.box.h * to.scale};
+		if (m.titleClear && overlaps(title, onScreen)) {
+			Room below = room, beside = room;
+			double &side = m.titleBottom ? below.bottom : below.top;
+			side = std::max(side, th);
+			to = fit(below);
+			if (m.titleStyle.align != 1) {
+				double &edge = m.titleStyle.align == 0 ? beside.left : beside.right;
+				edge = std::max(edge, m.titleStyle.align == 0 ? title.x + title.w : vw - title.x);
+				View v = fit(beside);
+				to = v.scale > to.scale ? v : to;
+			}
+		}
 		double duration = time(theme.focusTime);
 		if (!animate || !hasView_ || duration < 0.02) {
 			view_ = snapped(to);
@@ -672,7 +778,7 @@ public:
 			moving_ = true;
 		}
 		hasView_ = true;
-		baseScale_ = fitView(m.world, vw, vh, {}, m.maxZoom).scale;
+		baseScale_ = fitView(m.world, vw, vh, {}, m.maxZoom, m.padding).scale;
 	}
 
 	double labelAlpha(double t) const { return t < labelSwap_ ? labelOut_.at(t) : labelIn_.at(t); }
@@ -720,7 +826,7 @@ public:
 			if (page) {
 				bool hidden = (e.kind == kTitle && !m.showTitle) ||
 					      (e.kind == kLabel && shownLabel_.empty());
-				scale = hidden ? 0 : 1;
+				scale = hidden ? 0 : e.kind == kTitle ? m.titleScale : 1;
 				priority = 1e6;
 			} else if (visible && !moving) {
 				// At rest: as sharp as can be
@@ -753,7 +859,7 @@ public:
 			// Off screen, a small one: there at once when the camera gets there
 			if (scale == 0 && !e.gone && (!e.tex.tex || (!visible && e.tex.scale > base * 2.5) || stale))
 				scale = base;
-			scale = std::min(scale, kMaxTexture / std::max({e.box.w, e.box.h, 1.0}));
+			scale = std::min(scale, m.maxTexture / std::max({e.box.w, e.box.h, 1.0}));
 			if (scale > 0 && (!e.tex.tex || e.tex.scale != scale || stale))
 				wants.push_back(
 					{priority,
@@ -822,7 +928,7 @@ public:
 	void startIntro(double t)
 	{
 		introPending_ = false;
-		if (speed() <= 0)
+		if (speed() <= 0 || !model_->intro)
 			return;
 		std::vector<Element *> sets;
 		for (auto &[key, e] : elements_) {
@@ -912,19 +1018,30 @@ public:
 			gs_texrender_end(world_);
 		}
 
-		// The page: the title, the world under it, the caption
+		// The page: the background, the title, the world under or over it, the caption
+		if (m.background >> 24) {
+			gs_effect_t *solid = obs_get_base_effect(OBS_EFFECT_SOLID);
+			float a = static_cast<float>(m.background >> 24) / 255;
+			struct vec4 bg;
+			vec4_set(&bg, a * ((m.background >> 16) & 0xff) / 255, a * ((m.background >> 8) & 0xff) / 255,
+				 a * (m.background & 0xff) / 255, a);
+			gs_effect_set_vec4(gs_effect_get_param_by_name(solid, "color"), &bg);
+			while (gs_effect_loop(solid, "Solid"))
+				gs_draw_sprite(nullptr, 0, m.width, m.height);
+		}
 		gs_technique_begin(tech);
 		gs_technique_begin_pass(tech, 0);
-		double top = m.showTitle ? kTitleHeight : 0;
-		if (m.showTitle)
-			drawElement(elements_[keyOf(kTitle, "")], 0, 0, 1, 1, t);
+		double top = m.titleBottom ? 0 : m.titleRoom();
 		Texture world{gs_texrender_get_texture(world_),
 			      {0, 0, static_cast<double>(vw), static_cast<double>(vh)}};
 		drawTexture(world, 0, top, 1, 1);
+		if (m.showTitle)
+			drawElement(elements_[keyOf(kTitle, "")], 0, m.titleBottom ? m.height - m.titleHeight() : 0,
+				    m.titleScale, 1, t);
 		const Element &label = elements_[keyOf(kLabel, "")];
 		const Texture &caption = t < labelSwap_ && label.old.tex ? label.old : label.tex;
 		auto [cx, cy] = captionAt(m.caption, {0, top, static_cast<double>(m.width), static_cast<double>(vh)},
-					  caption.at.w, caption.at.h);
+					  caption.at.w, caption.at.h, m.captionMargin);
 		drawTexture(caption, cx, cy, 1, labelAlpha(t));
 		gs_technique_end_pass(tech);
 		gs_technique_end(tech);
@@ -953,6 +1070,9 @@ private:
 	// The source's thread's
 	json lastInput_;
 	bool warned_ = false;
+	/** What was last in focus, on the bracket of a signature */
+	std::optional<Box> held_;
+	size_t heldSignature_ = 0;
 
 	// The graphics thread's
 	std::shared_ptr<const Model> model_;
@@ -1003,15 +1123,73 @@ void update(void *data, obs_data_t *settings)
 void getDefaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "channel", "main");
-	obs_data_set_default_bool(settings, "title", true);
-	obs_data_set_default_bool(settings, "ignore_focus", false);
-	obs_data_set_default_string(settings, "caption_position", "bottom_center");
-	obs_data_set_default_int(settings, "max_zoom", 0);
-	obs_data_set_default_int(settings, "width", 1920);
-	obs_data_set_default_int(settings, "height", 1080);
+	for (const char *key : {"title", "title_clear", "title_logo", "title_tournament", "title_event", "title_phase",
+				"title_group", "intro", "standings", "byes"})
+		obs_data_set_default_bool(settings, key, true);
+	for (const char *key : kThemeChoices)
+		obs_data_set_default_string(settings, key, "theme");
+	for (auto [key, value] : {std::pair<const char *, const char *>{"caption_position", "bottom_center"},
+				  {"idle", "whole"},
+				  {"easing", "smooth"},
+				  {"background", "none"},
+				  {"title_style", "bar"},
+				  {"title_position", "top_left"}})
+		obs_data_set_default_string(settings, key, value);
+	for (auto [key, value] : {std::pair<const char *, long long>{"width", 1920},
+				  {"max_zoom", 0},
+				  {"min_zoom", 0},
+				  {"height", 1080},
+				  {"focus_padding", 60},
+				  {"caption_margin", 32},
+				  {"title_size", 100},
+				  {"title_opacity", 100},
+				  {"max_texture", 4096},
+				  {"focus_dim", -1},
+				  {"focus_time", -1},
+				  {"speed", -1},
+				  {"focus_color", 0xff00b8ff},
+				  {"background_color", 0xff1c1112}})
+		obs_data_set_default_int(settings, key, value);
 }
 
-obs_properties_t *getProperties(void *)
+const char *text(const std::string &key)
+{
+	return obs_module_text(("HyperDrive.BracketFocus." + key).c_str());
+}
+
+obs_property_t *addList(obs_properties_t *props, const char *key, const std::string &name,
+			std::initializer_list<const char *> values, const std::string &valueNames = "")
+{
+	obs_property_t *list =
+		obs_properties_add_list(props, key, text(name), OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	for (const char *value : values)
+		obs_property_list_add_string(list, text((valueNames.empty() ? name : valueNames) + "." + value), value);
+	return list;
+}
+
+obs_property_t *addInt(obs_properties_t *props, const char *key, const std::string &name, int min, int max, int step,
+		       const char *suffix)
+{
+	obs_property_t *p = obs_properties_add_int_slider(props, key, text(name), min, max, step);
+	obs_property_int_set_suffix(p, suffix);
+	return p;
+}
+
+bool useCanvasSize(obs_properties_t *, obs_property_t *, void *data)
+{
+	obs_video_info ovi;
+	if (!data || !obs_get_video_info(&ovi))
+		return false;
+	obs_source_t *self = static_cast<Source *>(data)->self();
+	obs_data_t *settings = obs_source_get_settings(self);
+	obs_data_set_int(settings, "width", ovi.base_width);
+	obs_data_set_int(settings, "height", ovi.base_height);
+	obs_source_update(self, settings);
+	obs_data_release(settings);
+	return true;
+}
+
+obs_properties_t *getProperties(void *data)
 {
 	obs_properties_t *props = obs_properties_create();
 	obs_property_t *channel = obs_properties_add_list(props, "channel",
@@ -1024,24 +1202,65 @@ obs_properties_t *getProperties(void *)
 	for (const std::string &name : channels)
 		obs_property_list_add_string(channel, name.c_str(), name.c_str());
 	obs_property_set_long_description(channel, obs_module_text("HyperDrive.Layout.Channel.Help"));
-	obs_properties_add_bool(props, "title", obs_module_text("HyperDrive.BracketFocus.Title"));
-	obs_properties_add_bool(props, "ignore_focus", obs_module_text("HyperDrive.BracketFocus.IgnoreFocus"));
-	obs_property_t *caption = obs_properties_add_list(props, "caption_position",
-							  obs_module_text("HyperDrive.BracketFocus.Caption"),
-							  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
-	for (const char *place : {"top_left", "top_center", "top_right", "middle_left", "middle_right", "bottom_left",
-				  "bottom_center", "bottom_right"})
-		obs_property_list_add_string(
-			caption, obs_module_text(("HyperDrive.BracketFocus.Caption." + std::string(place)).c_str()),
-			place);
-	obs_property_t *zoom = obs_properties_add_int_slider(
-		props, "max_zoom", obs_module_text("HyperDrive.BracketFocus.MaxZoom"), 0, 500, 10);
-	obs_property_int_set_suffix(zoom, "%");
-	obs_property_set_long_description(zoom, obs_module_text("HyperDrive.BracketFocus.MaxZoom.Help"));
+	obs_properties_add_bool(props, "ignore_focus", text("IgnoreFocus"));
 	obs_properties_add_int(props, "width", obs_module_text("HyperDrive.Layout.Width"), 1, 8192, 1);
 	obs_properties_add_int(props, "height", obs_module_text("HyperDrive.Layout.Height"), 1, 8192, 1);
-	obs_property_t *info =
-		obs_properties_add_text(props, "info", obs_module_text("HyperDrive.BracketFocus.Info"), OBS_TEXT_INFO);
+	if (data)
+		obs_properties_add_button2(props, "canvas_size", text("CanvasSize"), useCanvasSize, data);
+
+	obs_properties_t *camera = obs_properties_create();
+	obs_property_set_long_description(addInt(camera, "max_zoom", "MaxZoom", 0, 500, 10, "%"), text("MaxZoom.Help"));
+	obs_property_set_long_description(addInt(camera, "min_zoom", "MinZoom", 0, 500, 10, "%"), text("MinZoom.Help"));
+	addInt(camera, "focus_padding", "Padding", 0, 400, 4, " px");
+	addList(camera, "idle", "Idle", {"whole", "hold"});
+	addList(camera, "easing", "Easing", {"smooth", "sine", "out", "linear"});
+	obs_properties_add_group(props, "camera", text("Camera"), OBS_GROUP_NORMAL, camera);
+
+	obs_properties_t *theme = obs_properties_create();
+	obs_property_set_long_description(addInt(theme, "focus_dim", "FocusDim", -1, 100, 1, "%"), text("Theme.Help"));
+	obs_property_set_long_description(addInt(theme, "focus_time", "FocusTime", -1, 5000, 50, " ms"),
+					  text("Theme.Help"));
+	obs_property_set_long_description(addInt(theme, "speed", "Speed", -1, 400, 5, "%"), text("Theme.Help"));
+	for (const char *key : kThemeChoices)
+		addList(theme, key, "Choice." + std::string(key), {"theme", "on", "off"}, "Choice");
+	obs_properties_add_bool(theme, "custom_focus_color", text("CustomFocusColor"));
+	obs_properties_add_color(theme, "focus_color", text("FocusColor"));
+	obs_properties_add_group(props, "theme", text("Theme"), OBS_GROUP_NORMAL, theme);
+
+	obs_properties_t *look = obs_properties_create();
+	addList(look, "background", "Background", {"none", "theme", "custom"});
+	obs_properties_add_color_alpha(look, "background_color", text("BackgroundColor"));
+	obs_properties_add_bool(look, "intro", text("Intro"));
+	obs_properties_add_bool(look, "standings", text("Standings"));
+	obs_properties_add_bool(look, "byes", text("Byes"));
+	addList(look, "caption_position", "Caption",
+		{"top_left", "top_center", "top_right", "middle_left", "middle_right", "bottom_left", "bottom_center",
+		 "bottom_right"});
+	addInt(look, "caption_margin", "CaptionMargin", 0, 200, 2, " px");
+	obs_property_t *quality = obs_properties_add_list(look, "max_texture", text("Quality"), OBS_COMBO_TYPE_LIST,
+							  OBS_COMBO_FORMAT_INT);
+	for (int size : {2048, 4096, 8192})
+		obs_property_list_add_int(quality, (std::to_string(size) + " px").c_str(), size);
+	obs_property_set_long_description(quality, text("Quality.Help"));
+	obs_properties_add_group(props, "look", text("Look"), OBS_GROUP_NORMAL, look);
+
+	obs_properties_t *title = obs_properties_create();
+	addList(title, "title_style", "TitleStyle", {"bar", "floating"});
+	obs_property_set_long_description(obs_properties_add_bool(title, "title_clear", text("TitleClear")),
+					  text("TitleClear.Help"));
+	obs_property_set_long_description(
+		addList(title, "title_position", "TitlePosition",
+			{"top_left", "top_center", "top_right", "bottom_left", "bottom_center", "bottom_right"},
+			"Caption"),
+		text("TitlePosition.Help"));
+	addInt(title, "title_size", "TitleSize", 50, 200, 5, "%");
+	addInt(title, "title_opacity", "TitleOpacity", 0, 100, 5, "%");
+	for (const char *field : {"logo", "tournament", "event", "phase", "group"})
+		obs_properties_add_bool(title, ("title_" + std::string(field)).c_str(),
+					text("Title." + std::string(field)));
+	obs_properties_add_group(props, "title", text("Title"), OBS_GROUP_CHECKABLE, title);
+
+	obs_property_t *info = obs_properties_add_text(props, "info", text("Info"), OBS_TEXT_INFO);
 	obs_property_text_set_info_word_wrap(info, true);
 	return props;
 }

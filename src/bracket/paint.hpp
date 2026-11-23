@@ -125,8 +125,19 @@ Sprite paintLine(const Line &line, const Theme &theme, double scale, uint32_t ou
 /** The outline of a set in focus, or the bar under a round name */
 Sprite paintRing(const Box &box, const Theme &theme, uint32_t color, double scale, bool bar);
 
-/** The title bar: tournament, event, phase and phase group */
-Sprite paintTitle(const nlohmann::json &info, const Theme &theme, double width, double scale);
+struct TitleStyle {
+	bool logo = true;
+	/** As wide as what it shows, not the page */
+	bool fit = false;
+	/** When it fits: 0 left, 1 center, 2 right */
+	int align = 0;
+	/** Its background's */
+	double opacity = 1;
+};
+
+/** The title bar: the logo, tournament, event, phase and phase group */
+Sprite paintTitle(const nlohmann::json &info, const Theme &theme, double width, double scale,
+		  const TitleStyle &style = {});
 /** The caption saying what's in focus, its bottom center at (0, 0) */
 Sprite paintLabel(const std::string &label, const Theme &theme, uint32_t color, double scale);
 
