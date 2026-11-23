@@ -145,6 +145,8 @@ struct Model {
 	/** The focus caption: where it goes, and its width (for the camera's room) */
 	CaptionPlace caption;
 	double captionWidth = 0;
+	/** A floating title's picture, in its own pixels (before titleScale) */
+	Box titleBox;
 	/** What each piece shows, by key */
 	std::map<std::string, size_t> content;
 };
@@ -459,6 +461,10 @@ public:
 		model->content[keyOf(kLabel, "")] = hashOf(focus.label) ^ themeHash ^ focus.color;
 		if (!focus.label.empty())
 			model->captionWidth = paintLabel(focus.label, theme, focus.color, 0.05).at.w;
+		if (model->titleClear)
+			model->titleBox = paintTitle(model->title, theme, model->width / model->titleScale, 0.05,
+						     model->titleStyle)
+						  .at;
 
 		const json &sets = model->scene.bracket.contains("sets") ? model->scene.bracket["sets"] : json();
 		const json &players = model->scene.players;
@@ -733,12 +739,31 @@ public:
 
 		// The camera: from wherever it is, even halfway through a move
 		double vw = m.width, vh = viewportHeight();
+		auto fit = [&](const Room &room) {
+			View v = fitView(f.box, vw, vh, room, m.maxZoom, m.padding);
+			v.scale = std::max(v.scale, std::min(m.minZoom, m.maxZoom));
+			return v;
+		};
 		Room room = shown ? captionRoom(m.caption, m.captionWidth, m.captionMargin) : Room{};
-		// A floating title's side kept clear, if asked to
-		double &titleSide = m.titleBottom ? room.bottom : room.top;
-		titleSide = m.titleClear ? std::max(titleSide, m.titleHeight()) : titleSide;
-		View to = fitView(f.box, vw, vh, room, m.maxZoom, m.padding);
-		to.scale = std::max(to.scale, std::min(m.minZoom, m.maxZoom));
+		View to = fit(room);
+		// A floating title's corner kept clear, if asked to: what's in focus
+		// goes under (or over) it, or beside it, whichever is bigger
+		double k = m.titleScale, th = m.titleHeight();
+		Box title{m.titleBox.x * k, m.titleBottom ? vh - th : 0, m.titleBox.w * k, th};
+		Box onScreen{to.ax + (f.box.x - to.cx) * to.scale, to.ay + (f.box.y - to.cy) * to.scale,
+			     f.box.w * to.scale, f.box.h * to.scale};
+		if (m.titleClear && overlaps(title, onScreen)) {
+			Room below = room, beside = room;
+			double &side = m.titleBottom ? below.bottom : below.top;
+			side = std::max(side, th);
+			to = fit(below);
+			if (m.titleStyle.align != 1) {
+				double &edge = m.titleStyle.align == 0 ? beside.left : beside.right;
+				edge = std::max(edge, m.titleStyle.align == 0 ? title.x + title.w : vw - title.x);
+				View v = fit(beside);
+				to = v.scale > to.scale ? v : to;
+			}
+		}
 		double duration = time(theme.focusTime);
 		if (!animate || !hasView_ || duration < 0.02) {
 			view_ = snapped(to);
