@@ -31,7 +31,8 @@ static json placementJson()
 		"headers": {"w:1": {"x": 40, "y": 40, "w": 380, "h": 44}, "w:2": {"x": 520, "y": 40, "w": 380, "h": 44}},
 		"byes": {}, "standings": null,
 		"lines": [{"from": "a", "to": "c", "points": [[420, 137], [470, 137], [470, 190], [520, 190]]},
-		          {"from": "c", "to": null, "points": [[900, 190], [945, 190]], "arrow": true}],
+		          {"from": "c", "to": null, "points": [[900, 190], [945, 190]], "arrow": true,
+		           "label": "Top 8"}],
 		"width": 940, "height": 324
 	})");
 }
@@ -52,6 +53,9 @@ TEST(placement_parses)
 	CHECK_EQ(placed->lines.size(), 2u);
 	CHECK_EQ(placed->lines[1].to, std::string());
 	CHECK(placed->lines[1].arrow);
+	// Its label after the tip, as wide as 5 letters in a chip
+	CHECK_EQ(placed->lines[1].label, std::string("Top 8"));
+	CHECK(placed->lines[1].bounds() == (Box{900, 175, 139, 30}));
 	CHECK(placed->lines[0].bounds() == (Box{420, 137, 100, 53}));
 	CHECK(!placed->standings.has_value());
 	CHECK_EQ(placed->width, 940.0);

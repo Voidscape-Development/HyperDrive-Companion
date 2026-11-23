@@ -858,7 +858,15 @@ Sprite paintStandings(const Scene &scene, const Box &box, double scale)
 
 Sprite paintLine(const Line &line, const Theme &theme, double scale, uint32_t outline)
 {
-	return paint(grow(line.bounds(), 12), scale, [&](QPainter &p) {
+	// Its label: a chip as wide as its text (bounds() guesses), as a round name's
+	QFont f = font(theme, 20);
+	double labelW = outline || line.label.empty() ? 0 : widthOf({{qs(line.label), f, {}}}) + 24;
+	auto [lx, ly] = line.labelAt();
+	QRectF chip(lx, ly - 15, labelW, 30);
+	Box area = grow(line.bounds(), 12);
+	if (labelW > 0)
+		area = unite(area, {lx - 6, ly - 21, labelW + 12, 44});
+	return paint(area, scale, [&](QPainter &p) {
 		QPainterPath path(QPointF(line.points[0][0], line.points[0][1]));
 		for (size_t i = 1; i < line.points.size(); i++)
 			path.lineTo(line.points[i][0], line.points[i][1]);
@@ -878,6 +886,13 @@ Sprite paintLine(const Line &line, const Theme &theme, double scale, uint32_t ou
 		p.drawPath(path.translated(0, 2));
 		p.setPen(QPen(qcolor(theme.lines), 5, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
 		p.drawPath(path);
+		if (labelW <= 0)
+			return;
+		shadow(p, chip, theme.radius / 2);
+		p.setPen(Qt::NoPen);
+		p.setBrush(qcolor(theme.background));
+		p.drawRoundedRect(chip, theme.radius / 2, theme.radius / 2);
+		drawText(p, theme, chip.adjusted(12, 0, -12, 0), qs(line.label), f, qcolor(theme.text));
 	});
 }
 

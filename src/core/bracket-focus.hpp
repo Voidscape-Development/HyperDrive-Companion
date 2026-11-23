@@ -59,7 +59,12 @@ struct Line {
 	std::string to;
 	std::vector<std::array<double, 2>> points;
 	bool arrow = false;
+	/** An arrow's: where the players going on go, after its tip */
+	std::string label;
+	/** Its points, and its label (20px text, about 12px a letter, in a chip) */
 	Box bounds() const;
+	/** Where its label goes: (x, middle) */
+	std::array<double, 2> labelAt() const;
 };
 
 struct Placement {

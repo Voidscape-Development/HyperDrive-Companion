@@ -78,7 +78,15 @@ Box Line::bounds() const
 		Box point{points[i][0], points[i][1], 0, 0};
 		box = i ? unite(box, point) : point;
 	}
+	if (!label.empty() && !points.empty())
+		box = unite(box, {labelAt()[0], labelAt()[1] - 15, label.size() * 12.0 + 24, 30});
 	return box;
+}
+
+std::array<double, 2> Line::labelAt() const
+{
+	return points.empty() ? std::array<double, 2>{0, 0}
+			      : std::array<double, 2>{points.back()[0] + 10, points.back()[1]};
 }
 
 std::optional<Placement> parsePlacement(const json *placement)
@@ -93,7 +101,11 @@ std::optional<Placement> parsePlacement(const json *placement)
 		placed.standings = boxFrom(*standings);
 	if (const json *lines = get(*placement, "lines"); lines && lines->is_array()) {
 		for (const json &l : *lines) {
-			Line line{text(get(l, "from")), text(get(l, "to")), {}, truthy(get(l, "arrow"))};
+			Line line{text(get(l, "from")),
+				  text(get(l, "to")),
+				  {},
+				  truthy(get(l, "arrow")),
+				  text(get(l, "label"))};
 			if (const json *points = get(l, "points"); points && points->is_array())
 				for (const json &p : *points)
 					if (p.is_array() && p.size() == 2)
