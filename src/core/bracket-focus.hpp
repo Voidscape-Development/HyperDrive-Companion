@@ -180,13 +180,15 @@ struct Room {
  * The room for a caption (as wide as width) at a place: above or under what's
  * in focus at the top or the bottom, beside it in the middle
  */
-Room captionRoom(const CaptionPlace &place, double width);
+Room captionRoom(const CaptionPlace &place, double width, double margin = kLabelMargin);
 
 /** Where a caption of a size goes in a viewport (page pixels): its bottom center */
-std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height);
+std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height,
+				double margin = kLabelMargin);
 
-/** The view of a box in a viewport, leaving room free */
-View fitView(const Box &target, double width, double height, const Room &room, double maxZoom);
+/** The view of a box in a viewport, leaving room free, and padding around it */
+View fitView(const Box &target, double width, double height, const Room &room, double maxZoom,
+	     double padding = kPadding);
 /**
  * The view t (0 to 1) of the way from a to b: the scale changes
  * geometrically, around the one point that stays put on screen, so zooming

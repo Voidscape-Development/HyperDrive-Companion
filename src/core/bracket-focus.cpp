@@ -289,35 +289,36 @@ CaptionPlace CaptionPlace::parse(const std::string &value)
 	return place;
 }
 
-Room captionRoom(const CaptionPlace &place, double width)
+Room captionRoom(const CaptionPlace &place, double width, double margin)
 {
 	Room room;
 	if (place.row == 0)
-		room.top = kLabelRoom;
+		room.top = kLabelRoom + margin - kLabelMargin;
 	else if (place.row == 2)
-		room.bottom = kLabelRoom;
+		room.bottom = kLabelRoom + margin - kLabelMargin;
 	else if (place.column == 0)
-		room.left = width + kLabelMargin + 8;
+		room.left = width + margin + 8;
 	else
-		room.right = width + kLabelMargin + 8;
+		room.right = width + margin + 8;
 	return room;
 }
 
-std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height)
+std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height,
+				double margin)
 {
-	double x = place.column == 0   ? viewport.x + kLabelMargin + width / 2
-		   : place.column == 2 ? viewport.x + viewport.w - kLabelMargin - width / 2
+	double x = place.column == 0   ? viewport.x + margin + width / 2
+		   : place.column == 2 ? viewport.x + viewport.w - margin - width / 2
 				       : viewport.x + viewport.w / 2;
-	double y = place.row == 0   ? viewport.y + kLabelMargin + height
-		   : place.row == 2 ? viewport.y + viewport.h - kLabelMargin
+	double y = place.row == 0   ? viewport.y + margin + height
+		   : place.row == 2 ? viewport.y + viewport.h - margin
 				    : viewport.y + (viewport.h + height) / 2;
 	return {x, y};
 }
 
-View fitView(const Box &target, double width, double height, const Room &room, double maxZoom)
+View fitView(const Box &target, double width, double height, const Room &room, double maxZoom, double padding)
 {
 	double w = width - room.left - room.right, h = height - room.top - room.bottom;
-	double scale = std::min({(w - kPadding * 2) / target.w, (h - kPadding * 2) / target.h, maxZoom});
+	double scale = std::min({(w - padding * 2) / target.w, (h - padding * 2) / target.h, maxZoom});
 	return {target.x + target.w / 2, target.y + target.h / 2, room.left + w / 2, room.top + h / 2,
 		std::max(scale, 1e-4)};
 }
