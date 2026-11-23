@@ -102,7 +102,7 @@ and maximum zoom, animation speed), unless the source overrides it.
 | Focus caption position | Where the caption saying what's in focus goes: any of the 8 places along the edges (bottom center by default). The camera keeps that side free |
 | Caption margin | From the edge, 32px by default |
 | Largest picture size | 2048, 4096 (default) or 8192px: less video memory, or sharper close-ups |
-| **Title bar** | The tournament, event, phase and pool above the bracket (`index.html`), or not (`no_title.html`): at the top or bottom, 50 to 200% the size, with any of its fields |
+| **Title bar** | The logo, tournament, event, phase and pool above the bracket (`index.html`), or not (`no_title.html`), with any of its fields, 50 to 200% the size, and its background's opacity. A bar takes the top or bottom of the page; floating, it's as wide as what it shows, in a corner over the bracket, which takes the whole page (as with no title) |
 
 The camera moves, fades and outlines run on OBS's graphics thread every frame. Each set, round name
 and line is a picture painted on a thread of the source's own at the size the camera needs (ahead

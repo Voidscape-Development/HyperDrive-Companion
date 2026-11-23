@@ -914,32 +914,51 @@ Sprite paintRing(const Box &box, const Theme &theme, uint32_t color, double scal
 	});
 }
 
-Sprite paintTitle(const json &info, const Theme &t, double width, double scale)
+Sprite paintTitle(const json &info, const Theme &t, double width, double scale, const TitleStyle &style)
 {
-	return paint({0, 0, width, kTitleHeight}, scale, [&](QPainter &p) {
-		QRectF bar(24, 16, width - 48, kTitleHeight - 32);
+	auto textWidth = [&](const char *key, double size) {
+		return str(info, key).empty() ? 0.0 : widthOf({{qs(str(info, key)), font(t, size), {}}});
+	};
+	double logoW = style.logo ? 120 : 0, w = width - 48;
+	// The columns: as wide as their text, or the logo (120px) and two columns
+	// (100% wide, 16px padding) shrunk to fit, in proportion to their widths,
+	// as flex items are
+	double col1 = std::max(textWidth("tournament", 24), textWidth("event", 20)),
+	       col2 = std::max(textWidth("phase", 20), textWidth("group", 20));
+	if (style.fit) {
+		col1 = col1 > 0 ? col1 + 32 : 0;
+		col2 = col2 > 0 ? col2 + 32 : 0;
+		w = std::min(w, 16 + logoW + col1 + col2 + 16);
+	} else {
+		double shrink = (w + 80 + logoW) / (logoW + 2 * w);
+		logoW -= logoW * shrink;
+		col1 = col2 = w - w * shrink + 32;
+	}
+	double x = !style.fit || style.align == 0 ? 24 : style.align == 2 ? width - 24 - w : (width - w) / 2;
+	QRectF bar(x, 16, w, kTitleHeight - 32);
+	return paint({x, 0, w, kTitleHeight}, scale, [&](QPainter &p) {
+		QColor background = qcolor(t.background);
+		background.setAlphaF(background.alphaF() * style.opacity);
 		p.setPen(Qt::NoPen);
-		p.setBrush(qcolor(t.background));
+		p.setBrush(background);
 		p.drawRoundedRect(bar, t.radius / 2, t.radius / 2);
 		QPainterPath clip;
 		clip.addRoundedRect(bar, t.radius / 2, t.radius / 2);
 		p.setClipPath(clip);
-		// The logo (120px) and two columns (100% wide, 16px padding) shrunk
-		// to fit, in proportion to their widths, as flex items are
-		double w = bar.width(), over = w + 200, shrink = over / (120 + 2 * w);
-		QRectF logo(bar.x() + 16, bar.center().y() - 60, 120 - 120 * shrink, 120);
-		drawImage(p, logo, image("layout/logo.png"), false, t.radius);
-		double colW = w - w * shrink + 32;
+		QRectF logo(bar.x() + 16, bar.center().y() - 60, logoW, 120);
+		if (style.logo)
+			drawImage(p, logo, image("layout/logo.png"), false, t.radius);
 		// Lines as high as their text (Saira's line height), empty ones none
-		auto column = [&](double x, const char *a, double aSize, const char *b, Qt::Alignment align) {
+		auto column = [&](double x, double colW, const char *a, double aSize, const char *b,
+				  Qt::Alignment align) {
 			double ha = str(info, a).empty() ? 0 : aSize, hb = str(info, b).empty() ? 0 : 20;
 			QRectF r(x + 16, bar.center().y() - (ha + hb) / 2, colW - 32, ha);
 			drawText(p, t, r, qs(str(info, a)), font(t, aSize), qcolor(t.text), align);
 			drawText(p, t, QRectF(r.x(), r.bottom(), r.width(), hb), qs(str(info, b)), font(t, 20),
 				 qcolor(t.text), align);
 		};
-		column(logo.right(), "tournament", 24, "event", Qt::AlignLeft);
-		column(logo.right() + colW, "phase", 20, "group", Qt::AlignRight);
+		column(logo.right(), col1, "tournament", 24, "event", Qt::AlignLeft);
+		column(logo.right() + col1, col2, "phase", 20, "group", style.fit ? Qt::AlignLeft : Qt::AlignRight);
 	});
 }
 

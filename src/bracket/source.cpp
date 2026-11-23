@@ -134,11 +134,14 @@ struct Model {
 	json title;
 	uint32_t width = 1920, height = 1080;
 	bool showTitle = true, titleBottom = false, intro = true;
+	TitleStyle titleStyle;
 	double titleScale = 1, padding = kPadding, minZoom = 0, captionMargin = kLabelMargin, maxTexture = 4096;
 	std::string easing;
 	/** Under everything, 0xAARRGGBB (0: none) */
 	uint32_t background = 0;
 	double titleHeight() const { return showTitle ? kTitleHeight * titleScale : 0; }
+	/** What the title bar takes from the bracket: nothing when it floats over it */
+	double titleRoom() const { return titleStyle.fit ? 0 : titleHeight(); }
 	/** The focus caption: where it goes, and its width (for the camera's room) */
 	CaptionPlace caption;
 	double captionWidth = 0;
@@ -386,7 +389,10 @@ public:
 		model->width = static_cast<uint32_t>(std::max(1, s.value("width", 1920)));
 		model->height = static_cast<uint32_t>(std::max(1, s.value("height", 1080)));
 		model->showTitle = s.value("title", true);
-		model->titleBottom = s.value("title_position", "top") == "bottom";
+		std::string titlePlace = s.value("title_position", "top_left");
+		model->titleBottom = titlePlace.rfind("bottom", 0) == 0;
+		model->titleStyle = {s.value("title_logo", true), s.value("title_style", "bar") == "floating",
+				     CaptionPlace::parse(titlePlace).column, s.value("title_opacity", 100) / 100.0};
 		model->titleScale = std::max(10, s.value("title_size", 100)) / 100.0;
 		model->caption = CaptionPlace::parse(s.value("caption_position", "bottom_center"));
 		model->captionMargin = s.value("caption_margin", kLabelMargin);
@@ -521,7 +527,7 @@ public:
 		case kBar:
 			return paintRing(m.placed.headers.at(job.id), theme, m.focus.color, job.scale, true);
 		case kTitle:
-			return paintTitle(m.title, theme, m.width / m.titleScale, job.scale);
+			return paintTitle(m.title, theme, m.width / m.titleScale, job.scale, m.titleStyle);
 		case kLabel:
 			return paintLabel(m.focus.label, theme, m.focus.color, job.scale);
 		}
@@ -572,7 +578,7 @@ public:
 	double speed() const { return model_ ? model_->scene.theme.speed : 1; }
 	double time(double seconds) const { return speed() > 0 ? seconds / speed() : 0; }
 
-	double viewportHeight() const { return std::max(1.0, model_->height - model_->titleHeight()); }
+	double viewportHeight() const { return std::max(1.0, model_->height - model_->titleRoom()); }
 
 	View viewNow(double t) const
 	{
@@ -624,7 +630,7 @@ public:
 	{
 		bool rebuild = !model_ || model->signature != model_->signature;
 		bool resized = model_ && (model->width != model_->width || model->height != model_->height ||
-					  model->titleHeight() != model_->titleHeight() ||
+					  model->titleRoom() != model_->titleRoom() ||
 					  model->caption.row != model_->caption.row ||
 					  model->caption.column != model_->caption.column);
 		bool refocus = rebuild || resized || model->focusKey != model_->focusKey;
@@ -997,12 +1003,13 @@ public:
 		}
 		gs_technique_begin(tech);
 		gs_technique_begin_pass(tech, 0);
-		double top = m.titleBottom ? 0 : m.titleHeight();
-		if (m.showTitle)
-			drawElement(elements_[keyOf(kTitle, "")], 0, m.titleBottom ? vh : 0, m.titleScale, 1, t);
+		double top = m.titleBottom ? 0 : m.titleRoom();
 		Texture world{gs_texrender_get_texture(world_),
 			      {0, 0, static_cast<double>(vw), static_cast<double>(vh)}};
 		drawTexture(world, 0, top, 1, 1);
+		if (m.showTitle)
+			drawElement(elements_[keyOf(kTitle, "")], 0, m.titleBottom ? m.height - m.titleHeight() : 0,
+				    m.titleScale, 1, t);
 		const Element &label = elements_[keyOf(kLabel, "")];
 		const Texture &caption = t < labelSwap_ && label.old.tex ? label.old : label.tex;
 		auto [cx, cy] = captionAt(m.caption, {0, top, static_cast<double>(m.width), static_cast<double>(vh)},
@@ -1088,8 +1095,8 @@ void update(void *data, obs_data_t *settings)
 void getDefaults(obs_data_t *settings)
 {
 	obs_data_set_default_string(settings, "channel", "main");
-	for (const char *key :
-	     {"title", "title_tournament", "title_event", "title_phase", "title_group", "intro", "standings", "byes"})
+	for (const char *key : {"title", "title_logo", "title_tournament", "title_event", "title_phase", "title_group",
+				"intro", "standings", "byes"})
 		obs_data_set_default_bool(settings, key, true);
 	for (const char *key : kThemeChoices)
 		obs_data_set_default_string(settings, key, "theme");
@@ -1097,7 +1104,8 @@ void getDefaults(obs_data_t *settings)
 				  {"idle", "whole"},
 				  {"easing", "smooth"},
 				  {"background", "none"},
-				  {"title_position", "top"}})
+				  {"title_style", "bar"},
+				  {"title_position", "top_left"}})
 		obs_data_set_default_string(settings, key, value);
 	for (auto [key, value] : {std::pair<const char *, long long>{"width", 1920},
 				  {"max_zoom", 0},
@@ -1106,6 +1114,7 @@ void getDefaults(obs_data_t *settings)
 				  {"focus_padding", 60},
 				  {"caption_margin", 32},
 				  {"title_size", 100},
+				  {"title_opacity", 100},
 				  {"max_texture", 4096},
 				  {"focus_dim", -1},
 				  {"focus_time", -1},
@@ -1208,9 +1217,15 @@ obs_properties_t *getProperties(void *data)
 	obs_properties_add_group(props, "look", text("Look"), OBS_GROUP_NORMAL, look);
 
 	obs_properties_t *title = obs_properties_create();
-	addList(title, "title_position", "TitlePosition", {"top", "bottom"});
+	addList(title, "title_style", "TitleStyle", {"bar", "floating"});
+	obs_property_set_long_description(
+		addList(title, "title_position", "TitlePosition",
+			{"top_left", "top_center", "top_right", "bottom_left", "bottom_center", "bottom_right"},
+			"Caption"),
+		text("TitlePosition.Help"));
 	addInt(title, "title_size", "TitleSize", 50, 200, 5, "%");
-	for (const char *field : {"tournament", "event", "phase", "group"})
+	addInt(title, "title_opacity", "TitleOpacity", 0, 100, 5, "%");
+	for (const char *field : {"logo", "tournament", "event", "phase", "group"})
 		obs_properties_add_bool(title, ("title_" + std::string(field)).c_str(),
 					text("Title." + std::string(field)));
 	obs_properties_add_group(props, "title", text("Title"), OBS_GROUP_CHECKABLE, title);
