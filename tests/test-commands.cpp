@@ -83,3 +83,13 @@ TEST(commands_answers)
 	CHECK(!commandSucceeded(404, "File not found"));
 	CHECK(!commandSucceeded(0, ""));
 }
+
+TEST(commands_named)
+{
+	CHECK(namedCommand("team1.scoreup", 2)->path == "/scoreboard2-team1-scoreup");
+	CHECK(!namedCommand("nope", 1));
+	// Unique ids (they're the hotkeys' names)
+	for (size_t i = 0; i < namedCommands().size(); i++)
+		for (size_t j = i + 1; j < namedCommands().size(); j++)
+			CHECK(std::string(namedCommands()[i].id) != namedCommands()[j].id);
+}

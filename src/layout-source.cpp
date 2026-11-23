@@ -41,6 +41,11 @@ struct LayoutSource {
 	std::string url;
 };
 
+std::string instanceOf(obs_data_t *settings)
+{
+	return obs_data_get_string(settings, "instance");
+}
+
 std::string pageUrl(obs_data_t *settings)
 {
 	Companion *companion = Companion::instance();
@@ -52,7 +57,7 @@ std::string pageUrl(obs_data_t *settings)
 	options.display = obs_data_get_string(settings, "display");
 	options.channel = obs_data_get_string(settings, "channel");
 	options.extra = obs_data_get_string(settings, "extra_query");
-	return hd::layoutUrl(companion->baseUrl(), page, options);
+	return hd::layoutUrl(companion->baseUrl(instanceOf(settings)), page, options);
 }
 
 std::string previewUrl(obs_data_t *settings)
@@ -61,10 +66,11 @@ std::string previewUrl(obs_data_t *settings)
 	std::string page = obs_data_get_string(settings, "page");
 	if (!companion || page.empty())
 		return "";
-	for (const hd::LayoutFolder &folder : companion->layouts()) {
+	for (const hd::LayoutFolder &folder : companion->layouts(instanceOf(settings))) {
 		for (const hd::LayoutPage &p : folder.pages) {
 			if (p.path == page && !p.preview.empty())
-				return hd::layoutUrl(companion->baseUrl(), p.preview, hd::LayoutOptions());
+				return hd::layoutUrl(companion->baseUrl(instanceOf(settings)), p.preview,
+						     hd::LayoutOptions());
 		}
 	}
 	return "";
@@ -88,7 +94,7 @@ void fillPages(obs_properties_t *props, obs_data_t *settings)
 	std::string page = obs_data_get_string(settings, "page");
 	bool found = false;
 	if (Companion *companion = Companion::instance()) {
-		for (const hd::LayoutFolder &f : companion->layouts()) {
+		for (const hd::LayoutFolder &f : companion->layouts(instanceOf(settings))) {
 			if (f.folder != folder)
 				continue;
 			for (const hd::LayoutPage &p : f.pages) {
@@ -111,12 +117,12 @@ void fillFolders(obs_properties_t *props, obs_data_t *settings)
 	size_t count = 0;
 	bool fromServer = false;
 	if (Companion *companion = Companion::instance()) {
-		for (const hd::LayoutFolder &f : companion->layouts()) {
+		for (const hd::LayoutFolder &f : companion->layouts(instanceOf(settings))) {
 			obs_property_list_add_string(list, f.folder.c_str(), f.folder.c_str());
 			found = found || f.folder == folder;
 			count++;
 		}
-		fromServer = companion->layoutsFromServer();
+		fromServer = companion->layoutsFromServer(instanceOf(settings));
 	}
 	if (!found && !folder.empty())
 		obs_property_list_insert_string(list, 0, folder.c_str(), folder.c_str());
@@ -136,7 +142,7 @@ bool folderModified(obs_properties_t *props, obs_property_t *, obs_data_t *setti
 		// The folder's first page, preferably its index
 		std::string first;
 		if (Companion *companion = Companion::instance()) {
-			for (const hd::LayoutFolder &f : companion->layouts()) {
+			for (const hd::LayoutFolder &f : companion->layouts(instanceOf(settings))) {
 				if (f.folder != folder)
 					continue;
 				for (const hd::LayoutPage &p : f.pages) {
@@ -153,10 +159,10 @@ bool folderModified(obs_properties_t *props, obs_property_t *, obs_data_t *setti
 
 bool refreshList(obs_properties_t *props, obs_property_t *, void *data)
 {
-	if (Companion *companion = Companion::instance())
-		companion->layouts(true);
 	LayoutSource *source = static_cast<LayoutSource *>(data);
 	obs_data_t *settings = obs_source_get_settings(source->self);
+	if (Companion *companion = Companion::instance())
+		companion->layouts(instanceOf(settings), true);
 	fillFolders(props, settings);
 	obs_data_release(settings);
 	return true;
@@ -268,6 +274,11 @@ obs_properties_t *getProperties(void *data)
 {
 	obs_properties_t *props = obs_properties_create();
 
+	obs_property_set_modified_callback(addInstanceList(props),
+					   [](obs_properties_t *props, obs_property_t *, obs_data_t *settings) {
+						   fillFolders(props, settings);
+						   return true;
+					   });
 	obs_property_t *folder = obs_properties_add_list(props, "folder", obs_module_text("HyperDrive.Layout.Folder"),
 							 OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
 	obs_property_set_modified_callback(folder, folderModified);

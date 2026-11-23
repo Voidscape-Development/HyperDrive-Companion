@@ -152,6 +152,8 @@ struct Model {
 };
 
 struct Options {
+	/** The HyperDrive instance, "" for the default */
+	std::string instance;
 	std::string channel = "main";
 	/** All the settings, defaults included */
 	json s = json::object();
@@ -294,6 +296,7 @@ public:
 		while (!channel.empty() && channel.back() == ' ')
 			channel.pop_back();
 		o.channel = channel.empty() ? "main" : channel;
+		o.instance = obs_data_get_string(settings, "instance");
 		o.s = json::parse(obs_data_get_json_with_defaults(settings), nullptr, false);
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
@@ -336,6 +339,9 @@ public:
 			}
 			Companion *companion = Companion::instance();
 			uint64_t state = companion ? companion->stateVersion() : 0;
+			if (companion)
+				setAssetBase(hd::baseUrl(hd::connectAddress(
+					companion->hyperdrive(options.instance)->client->address())));
 			if (companion && (dirty || state != seenState)) {
 				seenState = state;
 				build(*companion, options);
@@ -353,7 +359,7 @@ public:
 	void build(Companion &companion, const Options &options)
 	{
 		json input = {{"options", options.s}, {"name", options.channel}};
-		companion.client().withState([&](const json &state) {
+		companion.hyperdrive(options.instance)->client->withState([&](const json &state) {
 			const json *channel = hd::get(state, "bracket.channels");
 			channel = channel && channel->is_object() && channel->contains(options.channel)
 					  ? &(*channel)[options.channel]
@@ -1192,13 +1198,21 @@ bool useCanvasSize(obs_properties_t *, obs_property_t *, void *data)
 obs_properties_t *getProperties(void *data)
 {
 	obs_properties_t *props = obs_properties_create();
+	addInstanceList(props);
 	obs_property_t *channel = obs_properties_add_list(props, "channel",
 							  obs_module_text("HyperDrive.Layout.Channel"),
 							  OBS_COMBO_TYPE_EDITABLE, OBS_COMBO_FORMAT_STRING);
 	std::vector<std::string> channels{"main"};
-	if (Companion *companion = Companion::instance())
-		companion->client().withState(
+	if (Companion *companion = Companion::instance()) {
+		std::string instance;
+		if (data) {
+			obs_data_t *settings = obs_source_get_settings(static_cast<Source *>(data)->self());
+			instance = obs_data_get_string(settings, "instance");
+			obs_data_release(settings);
+		}
+		companion->hyperdrive(instance)->client->withState(
 			[&channels](const nlohmann::json &state) { channels = hd::bracketChannels(state); });
+	}
 	for (const std::string &name : channels)
 		obs_property_list_add_string(channel, name.c_str(), name.c_str());
 	obs_property_set_long_description(channel, obs_module_text("HyperDrive.Layout.Channel.Help"));

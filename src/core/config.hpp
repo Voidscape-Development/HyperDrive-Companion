@@ -18,9 +18,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 /*
- * What the plugin saves in each OBS scene collection: the scene automation
- * rules, which layouts each scene shows or hides, and the scoreboard the
- * hotkeys control.
+ * What the plugin saves: the HyperDrive instances it connects to (for all
+ * scene collections), and in each scene collection the automation rules
+ * (When something happens, Only if conditions hold, Then actions in order),
+ * their groups, and what the hotkeys control.
  */
 
 #include <string>
@@ -32,47 +33,154 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 namespace hd {
 
-enum class TriggerKind { SetFinished, SetLoaded, StrikeStarted, StrikeEnded, ScoreChanged };
+// ---------------------------------------------------------------------
+// HyperDrive instances
 
-/** "set_finished", "set_loaded"... as saved */
-const char *triggerId(TriggerKind kind);
-bool parseTriggerId(const std::string &id, TriggerKind &kind);
-constexpr TriggerKind kAllTriggers[] = {TriggerKind::SetFinished, TriggerKind::SetLoaded, TriggerKind::StrikeStarted,
-					TriggerKind::StrikeEnded, TriggerKind::ScoreChanged};
-
-/** When something happens on a scoreboard, switch to a scene */
-struct AutomationRule {
-	bool enabled = true;
-	TriggerKind trigger = TriggerKind::SetFinished;
-	/** 0 for any scoreboard */
-	int scoreboard = 0;
-	/** The scene to switch to */
-	std::string scene;
-	/** Wait before switching */
-	int delayMs = 0;
-	/** Only when this scene is on program ("" for any) */
-	std::string fromScene;
+struct InstanceConfig {
+	/** Stable id the sources, rules and hotkeys refer to */
+	std::string id;
+	std::string name;
+	std::string host = "localhost";
+	int port = 5500;
+	/** "#rrggbb" tag shown next to its name, or "" */
+	std::string color;
 };
 
-/** When a scene goes on program, show or hide a layout folder, group or everything */
-struct SceneDisplayRule {
-	std::string scene;
-	/** A DisplayTarget: "all", "folder:<name>" or "group:<name>" */
-	std::string target = "all";
-	/** Show or Hide */
-	display::Action action = display::Action::Show;
+struct GlobalConfig {
+	/** At least one; the first is the default */
+	std::vector<InstanceConfig> instances;
+	/** HyperDrive's folder, to list the layouts when it has no GET /layouts */
+	std::string hyperdriveDir;
+	bool showAlerts = true;
+	/** The instance the dock controls */
+	std::string dockInstance;
+};
+
+/** Never throws; the single host/port of older versions becomes the "main" instance */
+GlobalConfig globalConfigFromJson(const nlohmann::json &json);
+nlohmann::json toJson(const GlobalConfig &config);
+
+// ---------------------------------------------------------------------
+// Automation
+
+enum class TriggerKind {
+	SetFinished,
+	SetLoaded,
+	ScoreChanged,
+	MatchPoint,
+	StrikeStarted,
+	StrikeEnded,
+	QueueChanged,
+	BattlePlayerOut,
+	BracketFocusChanged,
+	Connected,
+	Disconnected,
+	SceneLive,
+	RecordingStarted,
+	RecordingStopped,
+	StreamingStarted,
+	StreamingStopped,
+	Hotkey,
+	Timer,
+	Count
+};
+enum class ConditionKind {
+	SceneIs,
+	SceneIsNot,
+	BestOf,
+	RoundContains,
+	TeamHasGames,
+	Recording,
+	Streaming,
+	ReplayBuffer,
+	InstanceConnected,
+	Count
+};
+enum class ActionKind {
+	SwitchScene,
+	ShowLayouts,
+	HideLayouts,
+	ShowSource,
+	HideSource,
+	ToggleFilter,
+	Command,
+	Wait,
+	StartRecording,
+	StopRecording,
+	SaveReplay,
+	Count
+};
+
+/** "set_finished", "scene_is", "switch_scene"... as saved */
+const char *idOf(TriggerKind kind);
+const char *idOf(ConditionKind kind);
+const char *idOf(ActionKind kind);
+bool parseId(const std::string &id, TriggerKind &kind);
+bool parseId(const std::string &id, ConditionKind &kind);
+bool parseId(const std::string &id, ActionKind &kind);
+
+/** Happens on a HyperDrive instance (the others are OBS's or the plugin's) */
+bool triggerOfInstance(TriggerKind kind);
+/** Happens on a scoreboard */
+bool triggerHasScoreboard(TriggerKind kind);
+
+struct Condition {
+	ConditionKind kind = ConditionKind::SceneIs;
+	/** Scene, number, text or instance id; nothing for the OBS ones */
+	std::string value;
+};
+
+/**
+ * What target and value mean, by kind: SwitchScene (scene), Show/HideLayouts
+ * ("all", "folder:x", "group:x"), Show/HideSource (source, scene or "" for
+ * the one live), ToggleFilter (source, filter), Command (a NamedCommand id,
+ * scoreboard or "" for the event's), Wait (-, milliseconds).
+ */
+struct Action {
+	ActionKind kind = ActionKind::SwitchScene;
+	std::string target;
+	std::string value;
+};
+
+struct Rule {
+	std::string name;
+	/** A RuleGroup id, "" for none */
+	std::string group;
+	bool enabled = true;
+	TriggerKind trigger = TriggerKind::SetFinished;
+	/** The instance it listens to and commands, "" for any (commands: the event's, or the default) */
+	std::string instance;
+	/** 0 for any */
+	int scoreboard = 0;
+	/** SceneLive: scene; Hotkey: 1-10; Timer: minutes; BracketFocusChanged: channel. "" for any */
+	std::string param;
+	std::vector<Condition> conditions;
+	std::vector<Action> actions;
+};
+
+struct RuleGroup {
+	std::string id;
+	std::string name;
+	bool enabled = true;
 };
 
 struct CollectionConfig {
 	bool automationEnabled = true;
-	std::vector<AutomationRule> rules;
-	std::vector<SceneDisplayRule> sceneDisplay;
+	std::vector<RuleGroup> groups;
+	std::vector<Rule> rules;
 	/** The scoreboard the hotkeys control */
 	int hotkeyScoreboard = 1;
+	/** The instance the hotkeys control, "" to follow the dock */
+	std::string hotkeyInstance;
 };
 
+/** Enabled, and so is its group */
+bool ruleArmed(const CollectionConfig &config, const Rule &rule);
+
+nlohmann::json toJson(const Rule &rule);
+Rule ruleFromJson(const nlohmann::json &json);
 nlohmann::json toJson(const CollectionConfig &config);
-/** Never throws: what's missing or invalid gets its default */
+/** Never throws: what's missing or invalid gets its default. Migrates the older rules and Scenes › Layouts rows */
 CollectionConfig collectionConfigFromJson(const nlohmann::json &json);
 
 } // namespace hd

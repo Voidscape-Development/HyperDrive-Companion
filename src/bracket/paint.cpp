@@ -34,7 +34,6 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QPainterPath>
 #include <QSvgRenderer>
 
-#include "companion.hpp"
 #include "core/address.hpp"
 #include "core/state.hpp"
 
@@ -47,6 +46,20 @@ namespace {
 Assets *assets = nullptr;
 // Set while painting when an image or the fonts are still loading
 thread_local bool missing = false;
+// The web server of the HyperDrive the painting thread's source shows
+thread_local std::string assetBase;
+
+/** A path on HyperDrive's server as a URL (a URL stays as it is) */
+std::string assetUrl(const std::string &path)
+{
+	if (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0)
+		return path;
+	std::string encoded;
+	size_t start = 0;
+	for (size_t slash; (slash = path.find('/', start)) != std::string::npos; start = slash + 1)
+		encoded += hd::urlEncode(path.substr(start, slash - start)) + "/";
+	return assetBase + "/" + encoded + hd::urlEncode(path.substr(start));
+}
 
 // main.css's fonts: Saira Condensed, then Noto Sans for other scripts
 const char *kFonts[] = {"layout/fonts/Saira/Saira_Condensed-Bold.ttf",
@@ -558,8 +571,14 @@ void Assets::destroy()
 	assets = nullptr;
 }
 
-QImage Assets::image(const std::string &path, QSize *natural)
+void setAssetBase(const std::string &base)
 {
+	assetBase = base;
+}
+
+QImage Assets::image(const std::string &relative, QSize *natural)
+{
+	std::string path = assetUrl(relative);
 	std::lock_guard<std::mutex> lock(mutex_);
 	auto [it, added] = images_.try_emplace(path);
 	Entry &entry = it->second;
@@ -603,8 +622,9 @@ QStringList Assets::families(const std::string &themeFont)
 	std::lock_guard<std::mutex> lock(mutex_);
 	if (fontsPending_ < 0) {
 		fontsPending_ = static_cast<int>(std::size(kFonts));
-		for (const char *path : kFonts)
-			QMetaObject::invokeMethod(this, [this, path]() { fetch(path, true); }, Qt::QueuedConnection);
+		for (const char *font : kFonts)
+			QMetaObject::invokeMethod(
+				this, [this, path = assetUrl(font)]() { fetch(path, true); }, Qt::QueuedConnection);
 	}
 	if (fontsPending_ > 0 || fontsFailed_)
 		missing = true;
@@ -636,19 +656,6 @@ void Assets::retry()
 void Assets::fetch(const std::string &path, bool isFont)
 {
 	QString url = qs(path);
-	if (!url.startsWith(QStringLiteral("http://")) && !url.startsWith(QStringLiteral("https://"))) {
-		Companion *companion = Companion::instance();
-		if (!companion)
-			return;
-		const GlobalSettings &settings = companion->settings();
-		std::string encoded;
-		size_t start = 0;
-		for (size_t slash; (slash = path.find('/', start)) != std::string::npos; start = slash + 1)
-			encoded += hd::urlEncode(path.substr(start, slash - start)) + "/";
-		encoded += hd::urlEncode(path.substr(start));
-		url = qs(hd::baseUrl(hd::connectAddress(hd::parseAddress(settings.host, settings.port))) + "/" +
-			 encoded);
-	}
 	QNetworkReply *reply = network_->get(QNetworkRequest(QUrl(url)));
 	connect(reply, &QNetworkReply::finished, this, [this, reply, path, isFont]() {
 		reply->deleteLater();

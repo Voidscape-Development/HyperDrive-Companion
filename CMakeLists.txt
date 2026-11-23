@@ -90,6 +90,7 @@ target_sources(
     src/ui/dock.hpp
     src/ui/settings-dialog.cpp
     src/ui/settings-dialog.hpp
+    src/ui/style.hpp
 )
 
 set_target_properties_plugin(${CMAKE_PROJECT_NAME} PROPERTIES OUTPUT_NAME ${_name})

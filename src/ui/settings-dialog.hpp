@@ -18,34 +18,44 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 /*
- * Tools > HyperDrive Companion: where HyperDrive is, which layouts each scene
- * shows or hides, the scene automation and the hotkeys' scoreboard. All but
- * the connection are saved with the scene collection.
+ * Tools > HyperDrive Companion: the HyperDrive instances, the automation
+ * rules and their groups, and what the hotkeys control. The instances are
+ * saved for all scene collections, the rest with the scene collection.
  */
+
+#include <functional>
+#include <string>
+#include <vector>
 
 #include <QDialog>
 
+#include "core/config.hpp"
+
 class QCheckBox;
-class QLabel;
+class QComboBox;
 class QLineEdit;
+class QListWidget;
+class QScrollArea;
 class QSpinBox;
+class QTabWidget;
 class QTableWidget;
 
 class SettingsDialog : public QDialog {
 	Q_OBJECT
 
 public:
+	enum Tab { Instances, Automation, Hotkeys };
+
 	explicit SettingsDialog(QWidget *parent = nullptr);
 
-	/** Opens the one dialog, or brings it up */
-	static void showDialog();
+	/** Opens the one dialog on a tab, or brings it up */
+	static void showDialog(Tab tab = Instances);
 
 protected:
 	void showEvent(QShowEvent *event) override;
 
 private:
-	QWidget *buildConnectionTab();
-	QWidget *buildSceneDisplayTab();
+	QWidget *buildInstancesTab();
 	QWidget *buildAutomationTab();
 	QWidget *buildHotkeysTab();
 
@@ -53,22 +63,45 @@ private:
 	void save();
 	void refreshStatus();
 
-	void addSceneDisplayRow(const QString &scene, const QString &target, bool show);
-	void addRuleRow(bool enabled, int trigger, int scoreboard, const QString &scene, int delayMs,
-			const QString &fromScene);
+	void addInstanceRow(const hd::InstanceConfig &config);
+	std::vector<hd::InstanceConfig> instanceRows() const;
+	void moveInstance(int delta);
+
+	/** The rule being edited, or null */
+	hd::Rule *rule();
+	void refreshGroups();
+	/** The rule list, then the editor */
+	void refreshRules();
+	void refreshRuleItem();
+	void buildEditor();
+	/** Runs once the signal that asked for it is done (it may rebuild its sender) */
+	void later(std::function<void()> fn);
 	void moveRule(int delta);
+	void exportRules();
+	void importRules();
 
-	QStringList scenes_;
-	QStringList displayTargets_;
+	QTabWidget *tabs_ = nullptr;
 
-	QLineEdit *host_ = nullptr;
-	QSpinBox *port_ = nullptr;
+	QTableWidget *instances_ = nullptr;
 	QLineEdit *folder_ = nullptr;
 	QCheckBox *alerts_ = nullptr;
-	QLabel *status_ = nullptr;
 
-	QTableWidget *sceneDisplay_ = nullptr;
 	QCheckBox *automationEnabled_ = nullptr;
-	QTableWidget *rules_ = nullptr;
+	QListWidget *groups_ = nullptr;
+	QListWidget *rules_ = nullptr;
+	QScrollArea *editor_ = nullptr;
+	QListWidget *log_ = nullptr;
+	hd::CollectionConfig working_;
+	int current_ = -1;
+	/** The group shown, or all rules */
+	bool allGroups_ = true;
+	std::string group_;
+
+	QComboBox *hotkeyInstance_ = nullptr;
 	QSpinBox *hotkeyScoreboard_ = nullptr;
+
+	QStringList scenes_;
+	QStringList sources_;
+	QStringList displayTargets_;
+	QStringList channels_;
 };

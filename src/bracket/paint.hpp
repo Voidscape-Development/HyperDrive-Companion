@@ -49,6 +49,9 @@ namespace hd::bracket {
  * for every bracket source. Lives on the UI thread; image() and families()
  * from any thread.
  */
+/** The HyperDrive (its web server) the images of this thread's painting come from */
+void setAssetBase(const std::string &base);
+
 class Assets : public QObject {
 	Q_OBJECT
 
@@ -67,7 +70,7 @@ public:
 	QStringList families(const std::string &themeFont);
 	/** Changes when an image or the fonts arrive */
 	uint64_t version() const { return version_.load(); }
-	/** HyperDrive's address changed: everything is fetched again */
+	/** An address changed: everything is fetched again */
 	void clear();
 	/** HyperDrive is back: what couldn't be fetched is fetched again */
 	void retry();

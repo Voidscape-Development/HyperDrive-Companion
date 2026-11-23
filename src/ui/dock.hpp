@@ -18,20 +18,26 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 /*
- * The HyperDrive dock: the scoreboard, the stream queue, the crew battle,
- * the stage strike, the bracket focus and the Display Controls, live from
- * HyperDrive's state.
+ * The HyperDrive dock: which instance and scoreboard it controls, then the
+ * score, the stream queue, the crew battle, the stage strike, the bracket
+ * focus and the Display Controls, live from HyperDrive's state, and what the
+ * automation is doing.
  */
+
+#include <string>
 
 #include <QWidget>
 
 #include <nlohmann/json.hpp>
 
+class QButtonGroup;
 class QComboBox;
+class QFrame;
+class QHBoxLayout;
 class QLabel;
 class QListWidget;
-class QListWidgetItem;
 class QPushButton;
+class QStackedWidget;
 class QTimer;
 class QToolButton;
 
@@ -47,8 +53,10 @@ public:
 
 private:
 	struct TeamRow {
+		QFrame *card = nullptr;
 		QToolButton *color = nullptr;
 		QLabel *name = nullptr;
+		QLabel *detail = nullptr;
 		QLabel *score = nullptr;
 	};
 	struct BattleRow {
@@ -64,7 +72,10 @@ private:
 	QWidget *buildDisplayTab();
 
 	void refresh();
+	void refreshInstances();
 	void refreshStatus();
+	void refreshAutomation();
+	void refreshScoreboards(const nlohmann::json &state);
 	void refreshScoreboard(const nlohmann::json &state);
 	void refreshBattle(const nlohmann::json &state);
 	void refreshStrike(const nlohmann::json &state);
@@ -72,18 +83,26 @@ private:
 	void refreshDisplay(const nlohmann::json &state);
 	void showError(const QString &message);
 
-	int scoreboard() const;
 	void send(const hd::Request &request);
 	bool confirm(const QString &question);
 	void pickColor(int team);
 
-	QLabel *status_ = nullptr;
-	QComboBox *scoreboardPicker_ = nullptr;
-	QLabel *error_ = nullptr;
-	QTimer *errorTimer_ = nullptr;
+	/** The instance the dock controls */
+	std::string instance_;
+	int scoreboard_ = 1;
 
+	QComboBox *instancePicker_ = nullptr;
+	QHBoxLayout *scoreboards_ = nullptr;
+	QButtonGroup *scoreboardButtons_ = nullptr;
+	QLabel *status_ = nullptr;
+	QStackedWidget *pages_ = nullptr;
+	QLabel *toast_ = nullptr;
+	QTimer *toastTimer_ = nullptr;
+	QLabel *automation_ = nullptr;
+
+	QLabel *round_ = nullptr;
+	QLabel *pill_ = nullptr;
 	TeamRow teams_[2];
-	QLabel *matchInfo_ = nullptr;
 	QLabel *nextSet_ = nullptr;
 	BattleRow battle_[2];
 	QLabel *battleInfo_ = nullptr;
