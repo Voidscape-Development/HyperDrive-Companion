@@ -276,11 +276,49 @@ Box View::shows(double width, double height) const
 	return {-left() / scale, -top() / scale, width / scale, height / scale};
 }
 
-View fitView(const Box &target, double width, double height, double labelRoom, double maxZoom)
+CaptionPlace CaptionPlace::parse(const std::string &value)
 {
-	double scale =
-		std::min({(width - kPadding * 2) / target.w, (height - kPadding * 2 - labelRoom) / target.h, maxZoom});
-	return {target.x + target.w / 2, target.y + target.h / 2, width / 2, (height - labelRoom) / 2,
+	CaptionPlace place;
+	size_t split = value.find('_');
+	std::string row = value.substr(0, split), column = split == std::string::npos ? "" : value.substr(split + 1);
+	place.row = row == "top" ? 0 : row == "middle" ? 1 : 2;
+	place.column = column == "left" ? 0 : column == "right" ? 2 : 1;
+	// Not over what's in focus
+	if (place.row == 1 && place.column == 1)
+		place.row = 2;
+	return place;
+}
+
+Room captionRoom(const CaptionPlace &place, double width)
+{
+	Room room;
+	if (place.row == 0)
+		room.top = kLabelRoom;
+	else if (place.row == 2)
+		room.bottom = kLabelRoom;
+	else if (place.column == 0)
+		room.left = width + kLabelMargin + 8;
+	else
+		room.right = width + kLabelMargin + 8;
+	return room;
+}
+
+std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height)
+{
+	double x = place.column == 0   ? viewport.x + kLabelMargin + width / 2
+		   : place.column == 2 ? viewport.x + viewport.w - kLabelMargin - width / 2
+				       : viewport.x + viewport.w / 2;
+	double y = place.row == 0   ? viewport.y + kLabelMargin + height
+		   : place.row == 2 ? viewport.y + viewport.h - kLabelMargin
+				    : viewport.y + (viewport.h + height) / 2;
+	return {x, y};
+}
+
+View fitView(const Box &target, double width, double height, const Room &room, double maxZoom)
+{
+	double w = width - room.left - room.right, h = height - room.top - room.bottom;
+	double scale = std::min({(w - kPadding * 2) / target.w, (h - kPadding * 2) / target.h, maxZoom});
+	return {target.x + target.w / 2, target.y + target.h / 2, room.left + w / 2, room.top + h / 2,
 		std::max(scale, 1e-4)};
 }
 

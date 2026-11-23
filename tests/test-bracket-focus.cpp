@@ -147,12 +147,12 @@ TEST(focus_sets_rounds_and_box)
 
 TEST(camera)
 {
-	View v = fitView({0, 0, 1000, 500}, 1920, 1080, 0, 2);
+	View v = fitView({0, 0, 1000, 500}, 1920, 1080, {}, 2);
 	CHECK(std::abs(v.scale - 1.8) < 1e-9);
 	CHECK_EQ(v.cx, 500.0);
 	CHECK_EQ(v.ax, 960.0);
 	// Capped at the max zoom
-	CHECK_EQ(fitView({0, 0, 100, 50}, 1920, 1080, kLabelRoom, 2).scale, 2.0);
+	CHECK_EQ(fitView({0, 0, 100, 50}, 1920, 1080, {0, kLabelRoom, 0, 0}, 2).scale, 2.0);
 	Box shown = v.shows(1920, 1080);
 	CHECK(std::abs(shown.x + shown.w / 2 - 500) < 1e-9);
 
@@ -162,4 +162,42 @@ TEST(camera)
 	CHECK_EQ(easeInOut(0.5), 0.5);
 	CHECK_EQ(easeOut(1.0), 1.0);
 	CHECK(std::abs(easeSine(0.5) - 0.5) < 1e-9);
+}
+
+TEST(caption_places)
+{
+	CaptionPlace place = CaptionPlace::parse("top_right");
+	CHECK_EQ(place.row, 0);
+	CHECK_EQ(place.column, 2);
+	CHECK_EQ(CaptionPlace::parse("middle_left").column, 0);
+	// Unknown, or over what's in focus: bottom center
+	CHECK_EQ(CaptionPlace::parse("nope").row, 2);
+	CHECK_EQ(CaptionPlace::parse("middle_center").row, 2);
+	CHECK_EQ(CaptionPlace::parse("bottom_center").column, 1);
+
+	// Above or under what's in focus at the top or bottom, beside it in the middle
+	CHECK_EQ(captionRoom(CaptionPlace::parse("top_left"), 300).top, kLabelRoom);
+	CHECK_EQ(captionRoom(CaptionPlace::parse("bottom_right"), 300).bottom, kLabelRoom);
+	Room side = captionRoom(CaptionPlace::parse("middle_right"), 300);
+	CHECK_EQ(side.right, 300 + kLabelMargin + 8);
+	CHECK_EQ(side.top + side.bottom + side.left, 0.0);
+
+	// The view leaves the room free: centered in the rest
+	View v = fitView({0, 0, 100, 50}, 1920, 1080, side, 2);
+	CHECK_EQ(v.ax, (1920 - side.right) / 2);
+	CHECK_EQ(v.ay, 540.0);
+	View top = fitView({0, 0, 100, 50}, 1920, 1080, {kLabelRoom, 0, 0, 0}, 2);
+	CHECK_EQ(top.ay, kLabelRoom + (1080 - kLabelRoom) / 2);
+
+	// Bottom centers, 32px from the edges
+	Box page{0, 100, 1920, 980};
+	auto at = captionAt(CaptionPlace::parse("bottom_center"), page, 300, 50);
+	CHECK_EQ(at[0], 960.0);
+	CHECK_EQ(at[1], 1080 - kLabelMargin);
+	at = captionAt(CaptionPlace::parse("top_left"), page, 300, 50);
+	CHECK_EQ(at[0], kLabelMargin + 150);
+	CHECK_EQ(at[1], 100 + kLabelMargin + 50);
+	at = captionAt(CaptionPlace::parse("middle_right"), page, 300, 50);
+	CHECK_EQ(at[0], 1920 - kLabelMargin - 150);
+	CHECK_EQ(at[1], 100 + (980 + 50) / 2.0);
 }

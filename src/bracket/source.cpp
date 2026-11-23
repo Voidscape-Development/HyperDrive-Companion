@@ -97,6 +97,9 @@ struct Model {
 	json title;
 	uint32_t width = 1920, height = 1080;
 	bool showTitle = true;
+	/** The focus caption: where it goes, and its width (for the camera's room) */
+	CaptionPlace caption;
+	double captionWidth = 0;
 	/** What each piece shows, by key */
 	std::map<std::string, size_t> content;
 };
@@ -104,6 +107,7 @@ struct Model {
 struct Options {
 	std::string channel = "main";
 	bool title = true, ignoreFocus = false;
+	std::string caption = "bottom_center";
 	int maxZoom = 0;
 	uint32_t width = 1920, height = 1080;
 };
@@ -246,6 +250,7 @@ public:
 			channel.pop_back();
 		o.channel = channel.empty() ? "main" : channel;
 		o.title = obs_data_get_bool(settings, "title");
+		o.caption = obs_data_get_string(settings, "caption_position");
 		o.ignoreFocus = obs_data_get_bool(settings, "ignore_focus");
 		o.maxZoom = static_cast<int>(obs_data_get_int(settings, "max_zoom"));
 		o.width = static_cast<uint32_t>(std::max<long long>(1, obs_data_get_int(settings, "width")));
@@ -342,6 +347,7 @@ public:
 		model->width = options.width;
 		model->height = options.height;
 		model->showTitle = options.title;
+		model->caption = CaptionPlace::parse(options.caption);
 		model->scene.bracket = channel.contains("bracket") ? channel["bracket"] : json::object();
 		model->scene.players = input["players"];
 		model->scene.theme = parseTheme(&input["theme"]);
@@ -380,6 +386,8 @@ public:
 			       std::to_string(model->maxZoom) + "|" + std::to_string(theme.glows(focus.mode)) +
 			       std::to_string(options.ignoreFocus) + "|" + std::to_string(focus.color));
 		model->content[keyOf(kLabel, "")] = hashOf(focus.label) ^ themeHash ^ focus.color;
+		if (!focus.label.empty())
+			model->captionWidth = paintLabel(focus.label, theme, focus.color, 0.05).at.w;
 
 		const json &sets = model->scene.bracket.contains("sets") ? model->scene.bracket["sets"] : json();
 		const json &players = model->scene.players;
@@ -546,8 +554,10 @@ public:
 	void apply(const std::shared_ptr<const Model> &model, double t)
 	{
 		bool rebuild = !model_ || model->signature != model_->signature;
-		bool resized = model_ && (model->width != model_->width || model->height != model_->height ||
-					  model->showTitle != model_->showTitle);
+		bool resized = model_ &&
+			       (model->width != model_->width || model->height != model_->height ||
+				model->showTitle != model_->showTitle || model->caption.row != model_->caption.row ||
+				model->caption.column != model_->caption.column);
 		bool refocus = rebuild || resized || model->focusKey != model_->focusKey;
 		bool animate = model_ && !rebuild && !resized;
 		model_ = model;
@@ -647,7 +657,7 @@ public:
 
 		// The camera: from wherever it is, even halfway through a move
 		double vw = m.width, vh = viewportHeight();
-		View to = fitView(f.box, vw, vh, shown ? kLabelRoom : 0, m.maxZoom);
+		View to = fitView(f.box, vw, vh, shown ? captionRoom(m.caption, m.captionWidth) : Room{}, m.maxZoom);
 		double duration = time(theme.focusTime);
 		if (!animate || !hasView_ || duration < 0.02) {
 			view_ = snapped(to);
@@ -662,7 +672,7 @@ public:
 			moving_ = true;
 		}
 		hasView_ = true;
-		baseScale_ = fitView(m.world, vw, vh, 0, m.maxZoom).scale;
+		baseScale_ = fitView(m.world, vw, vh, {}, m.maxZoom).scale;
 	}
 
 	double labelAlpha(double t) const { return t < labelSwap_ ? labelOut_.at(t) : labelIn_.at(t); }
@@ -912,8 +922,10 @@ public:
 			      {0, 0, static_cast<double>(vw), static_cast<double>(vh)}};
 		drawTexture(world, 0, top, 1, 1);
 		const Element &label = elements_[keyOf(kLabel, "")];
-		drawTexture(t < labelSwap_ && label.old.tex ? label.old : label.tex, m.width / 2.0, m.height - 32.0, 1,
-			    labelAlpha(t));
+		const Texture &caption = t < labelSwap_ && label.old.tex ? label.old : label.tex;
+		auto [cx, cy] = captionAt(m.caption, {0, top, static_cast<double>(m.width), static_cast<double>(vh)},
+					  caption.at.w, caption.at.h);
+		drawTexture(caption, cx, cy, 1, labelAlpha(t));
 		gs_technique_end_pass(tech);
 		gs_technique_end(tech);
 
@@ -993,6 +1005,7 @@ void getDefaults(obs_data_t *settings)
 	obs_data_set_default_string(settings, "channel", "main");
 	obs_data_set_default_bool(settings, "title", true);
 	obs_data_set_default_bool(settings, "ignore_focus", false);
+	obs_data_set_default_string(settings, "caption_position", "bottom_center");
 	obs_data_set_default_int(settings, "max_zoom", 0);
 	obs_data_set_default_int(settings, "width", 1920);
 	obs_data_set_default_int(settings, "height", 1080);
@@ -1013,6 +1026,14 @@ obs_properties_t *getProperties(void *)
 	obs_property_set_long_description(channel, obs_module_text("HyperDrive.Layout.Channel.Help"));
 	obs_properties_add_bool(props, "title", obs_module_text("HyperDrive.BracketFocus.Title"));
 	obs_properties_add_bool(props, "ignore_focus", obs_module_text("HyperDrive.BracketFocus.IgnoreFocus"));
+	obs_property_t *caption = obs_properties_add_list(props, "caption_position",
+							  obs_module_text("HyperDrive.BracketFocus.Caption"),
+							  OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	for (const char *place : {"top_left", "top_center", "top_right", "middle_left", "middle_right", "bottom_left",
+				  "bottom_center", "bottom_right"})
+		obs_property_list_add_string(
+			caption, obs_module_text(("HyperDrive.BracketFocus.Caption." + std::string(place)).c_str()),
+			place);
 	obs_property_t *zoom = obs_properties_add_int_slider(
 		props, "max_zoom", obs_module_text("HyperDrive.BracketFocus.MaxZoom"), 0, 500, 10);
 	obs_property_int_set_suffix(zoom, "%");

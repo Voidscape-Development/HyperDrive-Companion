@@ -86,6 +86,7 @@ and maximum zoom, animation speed).
 | Bracket channel | The channel shown (`main` by default) |
 | Title bar | The tournament, event, phase and pool above the bracket (`index.html`), or not (`no_title.html`) |
 | Always show the whole bracket | Ignores the focus (`?ignore_focus=1`) |
+| Focus caption position | Where the caption saying what's in focus goes: any of the 8 places along the edges (bottom center by default). The camera keeps that side free |
 | Maximum zoom | How big a set is drawn when zoomed to, at most; 0 for the layout theme's |
 | Width, height | 1920x1080 by default |
 

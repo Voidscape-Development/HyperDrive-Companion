@@ -40,8 +40,9 @@ namespace hd::bracket {
 using json = nlohmann::json;
 
 // Sizes in world pixels, as the layout's
-constexpr double kPadding = 60;   // around what's in focus, on screen
-constexpr double kLabelRoom = 90; // under it, for the caption
+constexpr double kPadding = 60;     // around what's in focus, on screen
+constexpr double kLabelRoom = 90;   // above or under it, for the caption
+constexpr double kLabelMargin = 32; // between the caption and the edge
 constexpr double kTitleHeight = 100;
 constexpr double kFadeTime = 0.6;
 
@@ -160,8 +161,32 @@ struct View {
 	Box shows(double width, double height) const;
 };
 
-/** The view of a box in a viewport, with room for the caption under it */
-View fitView(const Box &target, double width, double height, double labelRoom, double maxZoom);
+/** Where the focus caption goes: one of the 8 places along the edges */
+struct CaptionPlace {
+	/** 0 top, 1 middle, 2 bottom */
+	int row = 2;
+	/** 0 left, 1 center, 2 right */
+	int column = 1;
+	/** "top_left", "middle_right", "bottom_center"... (bottom center otherwise) */
+	static CaptionPlace parse(const std::string &value);
+};
+
+/** Room the camera leaves free in the viewport, from each edge */
+struct Room {
+	double top = 0, bottom = 0, left = 0, right = 0;
+};
+
+/**
+ * The room for a caption (as wide as width) at a place: above or under what's
+ * in focus at the top or the bottom, beside it in the middle
+ */
+Room captionRoom(const CaptionPlace &place, double width);
+
+/** Where a caption of a size goes in a viewport (page pixels): its bottom center */
+std::array<double, 2> captionAt(const CaptionPlace &place, const Box &viewport, double width, double height);
+
+/** The view of a box in a viewport, leaving room free */
+View fitView(const Box &target, double width, double height, const Room &room, double maxZoom);
 /**
  * The view t (0 to 1) of the way from a to b: the scale changes
  * geometrically, around the one point that stays put on screen, so zooming
