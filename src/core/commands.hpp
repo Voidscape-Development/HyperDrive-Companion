@@ -25,6 +25,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 
@@ -94,6 +95,17 @@ namespace bracketFocus {
 enum class Mode { All, NextRound, PreviousRound, Follow, Tour };
 Request set(Mode mode, const std::string &channel = "main", int scoreboard = 1, int tourInterval = 0);
 } // namespace bracketFocus
+
+/** A command picked by its id (the hotkeys, the automation), for a scoreboard */
+struct NamedCommand {
+	/** "team1.scoreup": its hotkey is "hyperdrive.team1.scoreup" */
+	const char *id;
+	/** "HyperDrive.Hotkey.Team1ScoreUp" */
+	const char *textKey;
+	Request (*make)(int sb);
+};
+const std::vector<NamedCommand> &namedCommands();
+std::optional<Request> namedCommand(const std::string &id, int sb);
 
 /** The layout pages (HyperDrive with GET /layouts) */
 Request layouts();

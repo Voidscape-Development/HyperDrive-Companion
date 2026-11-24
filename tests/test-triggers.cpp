@@ -109,38 +109,84 @@ TEST(triggers_stage_strike)
 	CHECK(!has(events, TriggerKind::StrikeStarted));
 }
 
-TEST(triggers_match_rule)
+TEST(triggers_match_point_queue_battle_focus)
 {
-	std::vector<AutomationRule> rules(3);
-	rules[0].trigger = TriggerKind::ScoreChanged;
-	rules[0].scene = "Replay";
-	rules[0].enabled = false;
-	rules[1].trigger = TriggerKind::SetFinished;
-	rules[1].scoreboard = 2;
-	rules[1].scene = "Break";
-	rules[2].trigger = TriggerKind::SetFinished;
-	rules[2].scene = "Results";
-	rules[2].fromScene = "Game";
+	// Best of 5: 2 games is match point, once
+	auto events = detectTriggers(board("A", 1, "B", 1, 5), board("A", 2, "B", 1, 5));
+	CHECK(has(events, TriggerKind::MatchPoint));
+	CHECK(!has(detectTriggers(board("A", 2, "B", 1, 5), board("A", 2, "B", 2, 5)), TriggerKind::MatchPoint));
+	// Best of 1 has none
+	CHECK(!has(detectTriggers(board("A", 0, "B", 0, 1), board("A", 1, "B", 0, 1)), TriggerKind::MatchPoint));
 
-	std::vector<TriggerEvent> finished{{TriggerKind::SetFinished, 1}, {TriggerKind::ScoreChanged, 1}};
-	CHECK_EQ(matchRule(rules, finished, "Game"), 2);
-	// Only from the Game scene
-	CHECK_EQ(matchRule(rules, finished, "Other"), -1);
-	// Scoreboard 2 only
-	CHECK_EQ(matchRule(rules, {{TriggerKind::SetFinished, 2}}, "Other"), 1);
-	// Already on it
-	CHECK_EQ(matchRule(rules, {{TriggerKind::SetFinished, 2}}, "Break"), -1);
-	rules[0].enabled = true;
-	CHECK_EQ(matchRule(rules, finished, "Game"), 0);
+	json before = board("A", 0, "B", 0);
+	before["stream_queue"]["streams"] = json::array(
+		{{{"scoreboard", 1},
+		  {"sets", json::array({{{"team", {{"1", {{"teamName", "C"}}}, {"2", {{"teamName", "D"}}}}}}})}}});
+	json after = before;
+	after["stream_queue"]["streams"][0]["sets"][0]["team"]["1"]["teamName"] = "E";
+	CHECK(has(detectTriggers(before, after), TriggerKind::QueueChanged));
+	CHECK(!has(detectTriggers(before, before), TriggerKind::QueueChanged));
+
+	before["team_battle"]["team"]["1"]["player"]["1"] = {{"name", "P"}, {"dead", false}};
+	after = before;
+	after["team_battle"]["team"]["1"]["player"]["1"]["dead"] = true;
+	CHECK(has(detectTriggers(before, after), TriggerKind::BattlePlayerOut));
+
+	before["bracket"]["focus"]["main"] = {{"mode", "all"}};
+	after = before;
+	after["bracket"]["focus"]["main"]["mode"] = "round";
+	events = detectTriggers(triggerSnapshot(before), triggerSnapshot(after));
+	CHECK(events.size() == 1 && events[0] == (TriggerEvent{TriggerKind::BracketFocusChanged, 0, "main"}));
 }
 
-TEST(triggers_scene_display_rules)
+TEST(triggers_rule_matches)
 {
-	std::vector<SceneDisplayRule> rules{{"Game", "folder:scoreboard", display::Action::Show},
-					    {"Break", "folder:scoreboard", display::Action::Hide},
-					    {"Game", "group:main", display::Action::Show}};
-	auto game = sceneDisplayRules(rules, "Game");
-	CHECK_EQ(game.size(), size_t(2));
-	CHECK_EQ(game[1].target, "group:main");
-	CHECK(sceneDisplayRules(rules, "None").empty());
+	Rule rule;
+	rule.trigger = TriggerKind::SetFinished;
+	CHECK(ruleMatches(rule, {TriggerKind::SetFinished, 2}, "a"));
+	CHECK(!ruleMatches(rule, {TriggerKind::ScoreChanged, 2}, "a"));
+	rule.scoreboard = 1;
+	rule.instance = "a";
+	CHECK(!ruleMatches(rule, {TriggerKind::SetFinished, 2}, "a"));
+	CHECK(ruleMatches(rule, {TriggerKind::SetFinished, 1}, "a"));
+	CHECK(!ruleMatches(rule, {TriggerKind::SetFinished, 1}, "b"));
+
+	Rule scene;
+	scene.trigger = TriggerKind::SceneLive;
+	scene.instance = "a";
+	scene.param = "Break";
+	// The instance is for commands only: OBS events match from anywhere
+	CHECK(ruleMatches(scene, {TriggerKind::SceneLive, 0, "Break"}, ""));
+	CHECK(!ruleMatches(scene, {TriggerKind::SceneLive, 0, "Game"}, ""));
+
+	Rule timer;
+	timer.trigger = TriggerKind::Timer;
+	timer.param = "5";
+	CHECK(ruleMatches(timer, {TriggerKind::Timer, 0, "10"}, ""));
+	CHECK(!ruleMatches(timer, {TriggerKind::Timer, 0, "11"}, ""));
+}
+
+TEST(triggers_conditions)
+{
+	json state = board("A", 2, "B", 1, 5);
+	state["score"]["1"]["match"] = "Grand Final";
+	ConditionContext context;
+	context.scene = "Game";
+	context.state = &state;
+	context.recording = true;
+	context.connected = {"a"};
+	CHECK(conditionHolds({ConditionKind::SceneIs, "Game"}, context));
+	CHECK(!conditionHolds({ConditionKind::SceneIsNot, "Game"}, context));
+	CHECK(conditionHolds({ConditionKind::BestOf, "5"}, context));
+	CHECK(conditionHolds({ConditionKind::TeamHasGames, "2"}, context));
+	CHECK(!conditionHolds({ConditionKind::TeamHasGames, "3"}, context));
+	CHECK(conditionHolds({ConditionKind::Recording, ""}, context));
+	CHECK(!conditionHolds({ConditionKind::Streaming, ""}, context));
+	CHECK(conditionHolds({ConditionKind::InstanceConnected, "a"}, context));
+	CHECK(!conditionHolds({ConditionKind::InstanceConnected, "b"}, context));
+
+	Rule rule;
+	CHECK(conditionsHold(rule, context));
+	rule.conditions = {{ConditionKind::SceneIs, "Game"}, {ConditionKind::Streaming, ""}};
+	CHECK(!conditionsHold(rule, context));
 }

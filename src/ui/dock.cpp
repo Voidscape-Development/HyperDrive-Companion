@@ -17,9 +17,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 #include "dock.hpp"
 
+#include <QButtonGroup>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -27,11 +29,10 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
-#include <QPainter>
-#include <QPixmap>
 #include <QPushButton>
 #include <QSignalBlocker>
-#include <QTabWidget>
+#include <QStackedWidget>
+#include <QStyle>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -39,6 +40,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "companion.hpp"
 #include "core/commands.hpp"
 #include "core/state.hpp"
+#include "settings-dialog.hpp"
+#include "style.hpp"
 #include "text.hpp"
 
 using nlohmann::json;
@@ -50,17 +53,33 @@ QString q(const std::string &s)
 	return QString::fromStdString(s);
 }
 
-QIcon swatch(const std::string &color)
-{
-	QPixmap pixmap(16, 16);
-	pixmap.fill(Qt::transparent);
-	QPainter painter(&pixmap);
-	painter.setRenderHint(QPainter::Antialiasing);
-	painter.setPen(QPen(QColor(128, 128, 128), 1));
-	painter.setBrush(color.empty() ? QBrush(Qt::NoBrush) : QBrush(QColor(q(color))));
-	painter.drawRoundedRect(QRectF(1.5, 1.5, 13, 13), 3, 3);
-	return QIcon(pixmap);
-}
+// The tabs' line icons (24x24 SVG paths)
+const char *kIcons[] = {
+	"<rect x='3' y='5' width='18' height='14' rx='2'/><path d='M12 5v14M7 10v4M17 10v4'/>",
+	"<path d='M4 6h16M4 12h16M4 18h10'/>",
+	"<circle cx='9' cy='8' r='3'/><circle cx='17' cy='9' r='2.5'/><path d='M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6M15 14.5c3 0 6 2 6 5.5'/>",
+	"<path d='M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z'/><path d='M9 3v15M15 6v15'/>",
+	"<path d='M3 5h5v6H3M3 13h5v6H3M8 8h4v8H8M12 12h9'/>",
+	"<path d='M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z'/><circle cx='12' cy='12' r='3'/>",
+};
+
+const char *kStyle = R"(
+#hdTeam, #hdCard { background: palette(base); border: 1px solid palette(mid); border-radius: 8px; }
+#hdTeam[winner="true"] { border: 1px solid palette(highlight); }
+#hdCard { padding: 8px 10px; }
+#hdName { font-size: 15px; font-weight: 600; }
+#hdDetail, #hdStatus, #hdFooter { color: palette(placeholder-text); font-size: 11px; }
+#hdDetail[state="point"] { color: #ff8a3d; font-weight: 600; }
+#hdDetail[state="won"] { color: palette(highlight); font-weight: 600; }
+#hdScore { font-size: 28px; font-weight: 700; min-width: 38px; }
+#hdStep { min-width: 30px; min-height: 30px; font-size: 16px; font-weight: 600; }
+#hdRound { font-weight: 700; letter-spacing: 1px; }
+#hdPill { border: 1px solid palette(mid); border-radius: 9px; padding: 1px 8px; color: palette(placeholder-text); font-size: 11px; }
+#hdNav { border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 4px 0; font-size: 11px; }
+#hdNav:checked { border-bottom: 2px solid palette(highlight); }
+#hdSegment { padding: 3px 8px; font-weight: 600; }
+#hdToast { background: #c92f35; color: white; border-radius: 6px; padding: 8px 10px; }
+)";
 
 QPushButton *button(const char *textKey, QWidget *parent, const std::function<void()> &onClick)
 {
@@ -69,72 +88,135 @@ QPushButton *button(const char *textKey, QWidget *parent, const std::function<vo
 	return b;
 }
 
-QToolButton *smallButton(const QString &text, const char *tipKey, QWidget *parent, const std::function<void()> &onClick)
+QToolButton *smallButton(const QString &text, const char *tipKey, QWidget *parent, const std::function<void()> &onClick,
+			 const char *name = nullptr)
 {
 	QToolButton *b = new QToolButton(parent);
 	b->setText(text);
 	b->setToolTip(T(tipKey));
 	b->setMinimumWidth(28);
+	if (name)
+		b->setObjectName(QString::fromLatin1(name));
 	QObject::connect(b, &QToolButton::clicked, parent, onClick);
 	return b;
+}
+
+QLabel *label(const QString &text, const char *name, QWidget *parent)
+{
+	QLabel *l = new QLabel(text, parent);
+	l->setObjectName(QString::fromLatin1(name));
+	return l;
+}
+
+/** Applies a changed dynamic property to the style */
+void setState(QWidget *widget, const char *property, const QVariant &value)
+{
+	if (widget->property(property) == value)
+		return;
+	widget->setProperty(property, value);
+	widget->style()->unpolish(widget);
+	widget->style()->polish(widget);
 }
 
 } // namespace
 
 HyperDriveDock::HyperDriveDock(QWidget *parent) : QWidget(parent)
 {
+	setStyleSheet(QString::fromLatin1(kStyle));
 	QVBoxLayout *layout = new QVBoxLayout(this);
-	layout->setContentsMargins(4, 4, 4, 4);
+	layout->setContentsMargins(6, 6, 6, 6);
+	layout->setSpacing(6);
 
+	// Which HyperDrive, which scoreboard
 	QHBoxLayout *header = new QHBoxLayout();
-	status_ = new QLabel(this);
-	status_->setTextFormat(Qt::RichText);
-	scoreboardPicker_ = new QComboBox(this);
-	scoreboardPicker_->setToolTip(T("HyperDrive.Dock.Scoreboard.Tip"));
-	header->addWidget(status_, 1);
-	header->addWidget(scoreboardPicker_);
+	instancePicker_ = new QComboBox(this);
+	instancePicker_->setToolTip(T("HyperDrive.Dock.Instance.Tip"));
+	instancePicker_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+	instancePicker_->setMinimumContentsLength(6);
+	connect(instancePicker_, &QComboBox::activated, this, [this]() {
+		if (Companion *companion = Companion::instance())
+			companion->setDockInstance(instancePicker_->currentData().toString().toStdString());
+	});
+	header->addWidget(instancePicker_, 1);
+	scoreboards_ = new QHBoxLayout();
+	scoreboards_->setSpacing(0);
+	header->addLayout(scoreboards_);
+	scoreboardButtons_ = new QButtonGroup(this);
+	connect(scoreboardButtons_, &QButtonGroup::idClicked, this, [this](int sb) {
+		scoreboard_ = sb;
+		refresh();
+	});
 	layout->addLayout(header);
+	status_ = label(QString(), "hdStatus", this);
+	status_->setTextFormat(Qt::RichText);
+	layout->addWidget(status_);
 
-	error_ = new QLabel(this);
-	error_->setWordWrap(true);
-	error_->setStyleSheet(QStringLiteral("QLabel { color: #e85d5d; }"));
-	error_->hide();
-	errorTimer_ = new QTimer(this);
-	errorTimer_->setSingleShot(true);
-	connect(errorTimer_, &QTimer::timeout, error_, &QLabel::hide);
-	layout->addWidget(error_);
+	// The tabs: labelled icons, which fit a narrow dock
+	QHBoxLayout *nav = new QHBoxLayout();
+	nav->setSpacing(0);
+	pages_ = new QStackedWidget(this);
+	QButtonGroup *tabs = new QButtonGroup(this);
+	const char *names[] = {"HyperDrive.Dock.Tab.Score",   "HyperDrive.Dock.Tab.Queue",
+			       "HyperDrive.Dock.Tab.Battle",  "HyperDrive.Dock.Tab.Strike",
+			       "HyperDrive.Dock.Tab.Bracket", "HyperDrive.Dock.Tab.Display"};
+	QWidget *pages[] = {buildScoreTab(),  buildQueueTab(),   buildBattleTab(),
+			    buildStrikeTab(), buildBracketTab(), buildDisplayTab()};
+	for (int i = 0; i < 6; i++) {
+		QToolButton *tab = new QToolButton(this);
+		tab->setObjectName(QStringLiteral("hdNav"));
+		tab->setText(T(names[i]));
+		tab->setIcon(style::icon(kIcons[i], palette().color(QPalette::WindowText)));
+		tab->setIconSize(QSize(18, 18));
+		tab->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+		tab->setCheckable(true);
+		tab->setChecked(i == 0);
+		tab->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+		tabs->addButton(tab, i);
+		nav->addWidget(tab);
+		pages_->addWidget(pages[i]);
+	}
+	connect(tabs, &QButtonGroup::idClicked, pages_, &QStackedWidget::setCurrentIndex);
+	layout->addLayout(nav);
+	layout->addWidget(pages_, 1);
 
-	QTabWidget *tabs = new QTabWidget(this);
-	tabs->setDocumentMode(true);
-	tabs->addTab(buildScoreTab(), T("HyperDrive.Dock.Tab.Score"));
-	tabs->addTab(buildQueueTab(), T("HyperDrive.Dock.Tab.Queue"));
-	tabs->addTab(buildBattleTab(), T("HyperDrive.Dock.Tab.Battle"));
-	tabs->addTab(buildStrikeTab(), T("HyperDrive.Dock.Tab.Strike"));
-	tabs->addTab(buildBracketTab(), T("HyperDrive.Dock.Tab.Bracket"));
-	tabs->addTab(buildDisplayTab(), T("HyperDrive.Dock.Tab.Display"));
-	layout->addWidget(tabs, 1);
+	// A refused command, for a moment
+	toast_ = label(QString(), "hdToast", this);
+	toast_->setWordWrap(true);
+	toast_->hide();
+	toastTimer_ = new QTimer(this);
+	toastTimer_->setSingleShot(true);
+	connect(toastTimer_, &QTimer::timeout, toast_, &QLabel::hide);
+	layout->addWidget(toast_);
 
-	connect(scoreboardPicker_, &QComboBox::currentIndexChanged, this, [this]() { refresh(); });
+	// What the automation will do
+	QHBoxLayout *footer = new QHBoxLayout();
+	automation_ = label(QString(), "hdFooter", this);
+	automation_->setWordWrap(true);
+	footer->addWidget(automation_, 1);
+	QPushButton *edit = button("HyperDrive.Dock.EditRules", this,
+				   []() { SettingsDialog::showDialog(SettingsDialog::Automation); });
+	edit->setFlat(true);
+	footer->addWidget(edit);
+	layout->addLayout(footer);
 
 	if (Companion *companion = Companion::instance()) {
-		connect(companion, &Companion::stateChanged, this, &HyperDriveDock::refresh);
+		connect(companion, &Companion::stateChanged, this, [this](const QString &id) {
+			if (id.toStdString() == instance_)
+				refresh();
+		});
 		connect(companion, &Companion::statusChanged, this, &HyperDriveDock::refreshStatus);
-		connect(companion, &Companion::settingsChanged, this, &HyperDriveDock::refreshStatus);
+		connect(companion, &Companion::settingsChanged, this, &HyperDriveDock::refresh);
+		connect(companion, &Companion::configChanged, this, &HyperDriveDock::refreshAutomation);
 		connect(companion, &Companion::commandFailed, this, &HyperDriveDock::showError);
+		connect(companion, &Companion::automationRan, this, &HyperDriveDock::refreshAutomation);
 	}
 	refresh();
-}
-
-int HyperDriveDock::scoreboard() const
-{
-	int sb = scoreboardPicker_->currentData().toInt();
-	return sb > 0 ? sb : 1;
 }
 
 void HyperDriveDock::send(const hd::Request &request)
 {
 	if (Companion *companion = Companion::instance())
-		companion->command(request);
+		companion->command(request, instance_);
 }
 
 bool HyperDriveDock::confirm(const QString &question)
@@ -144,49 +226,69 @@ bool HyperDriveDock::confirm(const QString &question)
 
 void HyperDriveDock::showError(const QString &message)
 {
-	error_->setText(message);
-	error_->show();
-	errorTimer_->start(6000);
+	toast_->setText(message);
+	toast_->show();
+	toastTimer_->start(5000);
 }
 
 QWidget *HyperDriveDock::buildScoreTab()
 {
 	QWidget *tab = new QWidget(this);
 	QVBoxLayout *layout = new QVBoxLayout(tab);
-	QGridLayout *grid = new QGridLayout();
+	layout->setContentsMargins(0, 6, 0, 0);
+	QHBoxLayout *head = new QHBoxLayout();
+	round_ = label(QString(), "hdRound", tab);
+	pill_ = label(QString(), "hdPill", tab);
+	head->addWidget(round_, 1);
+	head->addWidget(pill_);
+	layout->addLayout(head);
+
 	for (int t = 0; t < 2; t++) {
 		int team = t + 1;
+		if (t == 1) {
+			QHBoxLayout *swap = new QHBoxLayout();
+			swap->addStretch(1);
+			QToolButton *b = smallButton(QStringLiteral("⇅ ") + T("HyperDrive.Dock.Swap"),
+						     "HyperDrive.Dock.Swap", tab,
+						     [this]() { send(hd::scoreboard::swapTeams(scoreboard_)); });
+			b->setAutoRaise(true);
+			swap->addWidget(b);
+			swap->addStretch(1);
+			layout->addLayout(swap);
+		}
 		TeamRow &row = teams_[t];
-		row.color = new QToolButton(tab);
+		row.card = new QFrame(tab);
+		row.card->setObjectName(QStringLiteral("hdTeam"));
+		QHBoxLayout *card = new QHBoxLayout(row.card);
+		card->setContentsMargins(0, 0, 8, 0);
+		row.color = new QToolButton(row.card);
 		row.color->setToolTip(T("HyperDrive.Dock.TeamColor"));
-		row.color->setAutoRaise(true);
+		row.color->setFixedWidth(8);
+		row.color->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
 		connect(row.color, &QToolButton::clicked, this, [this, team]() { pickColor(team); });
-		row.name = new QLabel(tab);
+		card->addWidget(row.color);
+		QVBoxLayout *names = new QVBoxLayout();
+		names->setContentsMargins(4, 8, 0, 8);
+		names->setSpacing(0);
+		row.name = label(QString(), "hdName", row.card);
 		row.name->setTextInteractionFlags(Qt::TextSelectableByMouse);
-		row.score = new QLabel(QStringLiteral("0"), tab);
-		row.score->setStyleSheet(QStringLiteral("QLabel { font-size: 20px; font-weight: bold; }"));
+		row.detail = label(QString(), "hdDetail", row.card);
+		names->addWidget(row.name);
+		names->addWidget(row.detail);
+		card->addLayout(names, 1);
+		card->addWidget(smallButton(
+			QStringLiteral("−"), "HyperDrive.Dock.ScoreDown", row.card,
+			[this, team]() { send(hd::scoreboard::scoreDown(scoreboard_, team)); }, "hdStep"));
+		row.score = label(QStringLiteral("0"), "hdScore", row.card);
 		row.score->setAlignment(Qt::AlignCenter);
-		row.score->setMinimumWidth(32);
-		grid->addWidget(row.color, t, 0);
-		grid->addWidget(row.name, t, 1);
-		grid->addWidget(smallButton(QStringLiteral("−"), "HyperDrive.Dock.ScoreDown", tab,
-					    [this, team]() { send(hd::scoreboard::scoreDown(scoreboard(), team)); }),
-				t, 2);
-		grid->addWidget(row.score, t, 3);
-		grid->addWidget(smallButton(QStringLiteral("+"), "HyperDrive.Dock.ScoreUp", tab,
-					    [this, team]() { send(hd::scoreboard::scoreUp(scoreboard(), team)); }),
-				t, 4);
+		card->addWidget(row.score);
+		card->addWidget(smallButton(
+			QStringLiteral("+"), "HyperDrive.Dock.ScoreUp", row.card,
+			[this, team]() { send(hd::scoreboard::scoreUp(scoreboard_, team)); }, "hdStep"));
+		layout->addWidget(row.card);
 	}
-	grid->setColumnStretch(1, 1);
-	layout->addLayout(grid);
-
-	matchInfo_ = new QLabel(tab);
-	matchInfo_->setWordWrap(true);
-	layout->addWidget(matchInfo_);
 
 	QHBoxLayout *actions = new QHBoxLayout();
-	actions->addWidget(
-		button("HyperDrive.Dock.Swap", tab, [this]() { send(hd::scoreboard::swapTeams(scoreboard())); }));
 	QToolButton *reset = new QToolButton(tab);
 	reset->setText(T("HyperDrive.Dock.Reset"));
 	reset->setPopupMode(QToolButton::InstantPopup);
@@ -203,11 +305,14 @@ QWidget *HyperDriveDock::buildScoreTab()
 				      ResetItem{"HyperDrive.Dock.Reset.All", Kind::All, true}}) {
 		menu->addAction(T(item.key), this, [this, item]() {
 			if (!item.ask || confirm(T("HyperDrive.Dock.Reset.Confirm").arg(T(item.key))))
-				send(hd::scoreboard::reset(scoreboard(), item.kind));
+				send(hd::scoreboard::reset(scoreboard_, item.kind));
 		});
 	}
 	reset->setMenu(menu);
 	actions->addWidget(reset);
+	actions->addWidget(button("HyperDrive.Dock.LoadNext", tab,
+				  [this]() { send(hd::scoreboard::loadNextQueued(scoreboard_)); }));
+	actions->addStretch(1);
 	layout->addLayout(actions);
 	layout->addStretch(1);
 	return tab;
@@ -217,15 +322,18 @@ QWidget *HyperDriveDock::buildQueueTab()
 {
 	QWidget *tab = new QWidget(this);
 	QVBoxLayout *layout = new QVBoxLayout(tab);
-	nextSet_ = new QLabel(tab);
+	layout->setContentsMargins(0, 6, 0, 0);
+	nextSet_ = label(QString(), "hdCard", tab);
 	nextSet_->setWordWrap(true);
 	layout->addWidget(nextSet_);
-	layout->addWidget(button("HyperDrive.Dock.LoadNext", tab,
-				 [this]() { send(hd::scoreboard::loadNextQueued(scoreboard())); }));
+	QPushButton *load = button("HyperDrive.Dock.LoadNext", tab,
+				   [this]() { send(hd::scoreboard::loadNextQueued(scoreboard_)); });
+	load->setDefault(true);
+	layout->addWidget(load);
 	layout->addWidget(button("HyperDrive.Dock.PullStream", tab,
-				 [this]() { send(hd::scoreboard::pullStreamSet(scoreboard())); }));
+				 [this]() { send(hd::scoreboard::pullStreamSet(scoreboard_)); }));
 	layout->addWidget(button("HyperDrive.Dock.OpenSetSelector", tab,
-				 [this]() { send(hd::scoreboard::openSetSelector(scoreboard())); }));
+				 [this]() { send(hd::scoreboard::openSetSelector(scoreboard_)); }));
 	layout->addStretch(1);
 	return tab;
 }
@@ -282,20 +390,10 @@ QWidget *HyperDriveDock::buildStrikeTab()
 	using C = hd::stageStrike::Command;
 	QWidget *tab = new QWidget(this);
 	QVBoxLayout *layout = new QVBoxLayout(tab);
-	strikeInfo_ = new QLabel(tab);
+	layout->setContentsMargins(0, 6, 0, 0);
+	strikeInfo_ = label(QString(), "hdCard", tab);
 	strikeInfo_->setWordWrap(true);
 	layout->addWidget(strikeInfo_);
-
-	QHBoxLayout *history = new QHBoxLayout();
-	history->addWidget(
-		button("HyperDrive.Dock.Undo", tab, [this]() { send(hd::stageStrike::run(scoreboard(), C::Undo)); }));
-	history->addWidget(
-		button("HyperDrive.Dock.Redo", tab, [this]() { send(hd::stageStrike::run(scoreboard(), C::Redo)); }));
-	history->addWidget(button("HyperDrive.Dock.StrikeReset", tab, [this]() {
-		if (confirm(T("HyperDrive.Dock.StrikeReset.Confirm")))
-			send(hd::stageStrike::run(scoreboard(), C::Reset));
-	}));
-	layout->addLayout(history);
 
 	QFormLayout *winners = new QFormLayout();
 	QHBoxLayout *rps = new QHBoxLayout();
@@ -304,16 +402,27 @@ QWidget *HyperDriveDock::buildStrikeTab()
 		int team = t + 1;
 		rps_[t] = new QPushButton(tab);
 		connect(rps_[t], &QPushButton::clicked, this,
-			[this, team]() { send(hd::stageStrike::run(scoreboard(), C::RpsWin, team)); });
+			[this, team]() { send(hd::stageStrike::run(scoreboard_, C::RpsWin, team)); });
 		rps->addWidget(rps_[t]);
 		gameWin_[t] = new QPushButton(tab);
 		connect(gameWin_[t], &QPushButton::clicked, this,
-			[this, team]() { send(hd::stageStrike::run(scoreboard(), C::GameWin, team)); });
+			[this, team]() { send(hd::stageStrike::run(scoreboard_, C::GameWin, team)); });
 		game->addWidget(gameWin_[t]);
 	}
 	winners->addRow(T("HyperDrive.Dock.RpsWinner"), rps);
 	winners->addRow(T("HyperDrive.Dock.GameWinner"), game);
 	layout->addLayout(winners);
+
+	QHBoxLayout *history = new QHBoxLayout();
+	history->addWidget(
+		button("HyperDrive.Dock.Undo", tab, [this]() { send(hd::stageStrike::run(scoreboard_, C::Undo)); }));
+	history->addWidget(
+		button("HyperDrive.Dock.Redo", tab, [this]() { send(hd::stageStrike::run(scoreboard_, C::Redo)); }));
+	history->addWidget(button("HyperDrive.Dock.StrikeReset", tab, [this]() {
+		if (confirm(T("HyperDrive.Dock.StrikeReset.Confirm")))
+			send(hd::stageStrike::run(scoreboard_, C::Reset));
+	}));
+	layout->addLayout(history);
 	layout->addStretch(1);
 	return tab;
 }
@@ -323,25 +432,33 @@ QWidget *HyperDriveDock::buildBracketTab()
 	using M = hd::bracketFocus::Mode;
 	QWidget *tab = new QWidget(this);
 	QVBoxLayout *layout = new QVBoxLayout(tab);
+	layout->setContentsMargins(0, 6, 0, 0);
 	QFormLayout *form = new QFormLayout();
 	bracketChannel_ = new QComboBox(tab);
 	bracketChannel_->addItem(QStringLiteral("main"));
 	connect(bracketChannel_, &QComboBox::currentIndexChanged, this, [this]() { refresh(); });
 	form->addRow(T("HyperDrive.Dock.Channel"), bracketChannel_);
 	layout->addLayout(form);
-	bracketInfo_ = new QLabel(tab);
-	bracketInfo_->setWordWrap(true);
-	layout->addWidget(bracketInfo_);
 
 	auto focus = [this](M mode) {
-		send(hd::bracketFocus::set(mode, bracketChannel_->currentText().toStdString(), scoreboard()));
+		send(hd::bracketFocus::set(mode, bracketChannel_->currentText().toStdString(), scoreboard_));
 	};
+	QHBoxLayout *rounds = new QHBoxLayout();
+	rounds->addWidget(smallButton(
+		QStringLiteral("‹"), "HyperDrive.Dock.Bracket.Previous", tab, [focus]() { focus(M::PreviousRound); },
+		"hdStep"));
+	bracketInfo_ = label(QString(), "hdRound", tab);
+	bracketInfo_->setAlignment(Qt::AlignCenter);
+	bracketInfo_->setWordWrap(true);
+	rounds->addWidget(bracketInfo_, 1);
+	rounds->addWidget(smallButton(
+		QStringLiteral("›"), "HyperDrive.Dock.Bracket.Next", tab, [focus]() { focus(M::NextRound); },
+		"hdStep"));
+	layout->addLayout(rounds);
 	QGridLayout *grid = new QGridLayout();
-	grid->addWidget(button("HyperDrive.Dock.Bracket.Previous", tab, [focus]() { focus(M::PreviousRound); }), 0, 0);
-	grid->addWidget(button("HyperDrive.Dock.Bracket.Next", tab, [focus]() { focus(M::NextRound); }), 0, 1);
-	grid->addWidget(button("HyperDrive.Dock.Bracket.All", tab, [focus]() { focus(M::All); }), 1, 0);
-	grid->addWidget(button("HyperDrive.Dock.Bracket.Follow", tab, [focus]() { focus(M::Follow); }), 1, 1);
-	grid->addWidget(button("HyperDrive.Dock.Bracket.Tour", tab, [focus]() { focus(M::Tour); }), 2, 0, 1, 2);
+	grid->addWidget(button("HyperDrive.Dock.Bracket.All", tab, [focus]() { focus(M::All); }), 0, 0);
+	grid->addWidget(button("HyperDrive.Dock.Bracket.Follow", tab, [focus]() { focus(M::Follow); }), 0, 1);
+	grid->addWidget(button("HyperDrive.Dock.Bracket.Tour", tab, [focus]() { focus(M::Tour); }), 1, 0, 1, 2);
 	layout->addLayout(grid);
 	layout->addStretch(1);
 	return tab;
@@ -375,7 +492,18 @@ void HyperDriveDock::pickColor(int team)
 	QColor color = QColorDialog::getColor(initial.isValid() ? initial : QColor(Qt::white), this,
 					      T("HyperDrive.Dock.TeamColor"));
 	if (color.isValid())
-		send(hd::scoreboard::teamColor(scoreboard(), team, color.name().toStdString()));
+		send(hd::scoreboard::teamColor(scoreboard_, team, color.name().toStdString()));
+}
+
+void HyperDriveDock::refreshInstances()
+{
+	Companion *companion = Companion::instance();
+	QSignalBlocker block(instancePicker_);
+	instancePicker_->clear();
+	for (const auto &drive : companion->hyperdrives())
+		instancePicker_->addItem(style::swatch(q(drive->config.color), 12), q(drive->config.name),
+					 q(drive->config.id));
+	instancePicker_->setCurrentIndex(std::max(0, instancePicker_->findData(q(instance_))));
 }
 
 void HyperDriveDock::refreshStatus()
@@ -383,49 +511,37 @@ void HyperDriveDock::refreshStatus()
 	Companion *companion = Companion::instance();
 	if (!companion)
 		return;
-	QString address = q(companion->settings().host) + ":" + QString::number(companion->settings().port);
-	const char *color = "#e85d5d";
-	const char *key = "HyperDrive.Status.Disconnected";
-	switch (companion->client().status()) {
-	case hd::ConnectionStatus::Connected:
-		color = "#4caf50";
-		key = "HyperDrive.Status.Connected";
-		break;
-	case hd::ConnectionStatus::Connecting:
-		color = "#e0a030";
-		key = "HyperDrive.Status.Connecting";
-		break;
-	case hd::ConnectionStatus::Disconnected:
-		break;
-	}
-	status_->setText(
-		QStringLiteral("<span style=\"color:%1\">●</span> %2").arg(color, T(key).arg(address.toHtmlEscaped())));
+	auto drive = companion->hyperdrive(instance_);
+	hd::Address address = drive->client->address();
+	status_->setText(style::status(drive->client->status(), q(address.host) + ":" + QString::number(address.port)));
+}
+
+void HyperDriveDock::refreshAutomation()
+{
+	Companion *companion = Companion::instance();
+	if (!companion)
+		return;
+	const hd::CollectionConfig &config = companion->config();
+	int armed = static_cast<int>(std::count_if(config.rules.begin(), config.rules.end(),
+						   [&](const hd::Rule &r) { return hd::ruleArmed(config, r); }));
+	QString text = !config.automationEnabled ? T("HyperDrive.Dock.AutomationOff")
+						 : T("HyperDrive.Dock.AutomationArmed").arg(armed);
+	if (!companion->automationLog().isEmpty())
+		text += QStringLiteral("\n") + companion->automationLog().last();
+	automation_->setText(QStringLiteral("⚡ ") + text);
 }
 
 void HyperDriveDock::refresh()
 {
-	refreshStatus();
 	Companion *companion = Companion::instance();
 	if (!companion)
 		return;
-	companion->client().withState([this](const json &state) {
-		// The scoreboards HyperDrive has
-		std::vector<int> numbers = hd::scoreboardNumbers(state);
-		if (numbers.empty())
-			numbers.push_back(1);
-		bool same = static_cast<size_t>(scoreboardPicker_->count()) == numbers.size();
-		for (size_t i = 0; same && i < numbers.size(); i++)
-			same = scoreboardPicker_->itemData(static_cast<int>(i)).toInt() == numbers[i];
-		if (!same) {
-			QSignalBlocker block(scoreboardPicker_);
-			int current = scoreboard();
-			scoreboardPicker_->clear();
-			for (int n : numbers)
-				scoreboardPicker_->addItem(T("HyperDrive.Dock.ScoreboardN").arg(n), n);
-			int index = scoreboardPicker_->findData(current);
-			scoreboardPicker_->setCurrentIndex(index >= 0 ? index : 0);
-		}
-
+	instance_ = companion->dockInstance();
+	refreshInstances();
+	refreshStatus();
+	refreshAutomation();
+	companion->hyperdrive(instance_)->client->withState([this](const json &state) {
+		refreshScoreboards(state);
 		refreshScoreboard(state);
 		refreshBattle(state);
 		refreshStrike(state);
@@ -434,32 +550,81 @@ void HyperDriveDock::refresh()
 	});
 }
 
+void HyperDriveDock::refreshScoreboards(const json &state)
+{
+	// The scoreboards HyperDrive has, as a segmented control
+	std::vector<int> numbers = hd::scoreboardNumbers(state);
+	if (numbers.empty())
+		numbers.push_back(1);
+	if (std::find(numbers.begin(), numbers.end(), scoreboard_) == numbers.end())
+		scoreboard_ = numbers.front();
+	QList<QAbstractButton *> buttons = scoreboardButtons_->buttons();
+	bool same = static_cast<size_t>(buttons.size()) == numbers.size();
+	for (size_t i = 0; same && i < numbers.size(); i++)
+		same = scoreboardButtons_->id(buttons[static_cast<int>(i)]) == numbers[i];
+	if (!same) {
+		for (QAbstractButton *b : buttons)
+			delete b;
+		for (int n : numbers) {
+			QToolButton *b = new QToolButton(this);
+			b->setObjectName(QStringLiteral("hdSegment"));
+			b->setText(QStringLiteral("SB%1").arg(n));
+			b->setToolTip(T("HyperDrive.Dock.ScoreboardN").arg(n));
+			b->setCheckable(true);
+			scoreboardButtons_->addButton(b, n);
+			scoreboards_->addWidget(b);
+		}
+	}
+	if (QAbstractButton *b = scoreboardButtons_->button(scoreboard_))
+		b->setChecked(true);
+	// One scoreboard: nothing to pick
+	for (QAbstractButton *b : scoreboardButtons_->buttons())
+		b->setVisible(numbers.size() > 1);
+}
+
 void HyperDriveDock::refreshScoreboard(const json &state)
 {
-	int sb = scoreboard();
+	int sb = scoreboard_;
+	int bestOf = hd::bestOf(state, sb);
+	int wins = hd::winsNeeded(bestOf);
+	int played = 0;
+	int winner = -1;
+	std::optional<hd::TeamInfo> teams[2] = {hd::scoreboardTeam(state, sb, 1), hd::scoreboardTeam(state, sb, 2)};
 	for (int t = 0; t < 2; t++) {
-		auto team = hd::scoreboardTeam(state, sb, t + 1);
+		int score = teams[t] ? teams[t]->score : 0;
+		played += score;
+		if (wins > 0 && score >= wins)
+			winner = t;
+	}
+	for (int t = 0; t < 2; t++) {
+		const auto &team = teams[t];
 		TeamRow &row = teams_[t];
 		QString name = team && !team->name.empty() ? q(team->name) : T("HyperDrive.Dock.Team").arg(t + 1);
 		if (team && team->losers)
 			name += QStringLiteral(" [L]");
 		row.name->setText(name);
-		row.score->setText(QString::number(team ? team->score : 0));
+		int score = team ? team->score : 0;
+		row.score->setText(QString::number(score));
 		std::string color = team ? team->color : "";
-		row.color->setIcon(swatch(color));
+		row.color->setStyleSheet(
+			QStringLiteral("QToolButton { border: none; border-radius: 0; background: %1; }")
+				.arg(color.empty() ? QStringLiteral("palette(mid)") : q(color)));
 		row.color->setProperty("hdColor", color.empty() ? QColor() : QColor(q(color)));
+		bool point = winner < 0 && wins > 1 && score == wins - 1;
+		row.detail->setText(winner == t ? T("HyperDrive.Dock.WinsSet")
+				    : point     ? T("HyperDrive.Dock.MatchPoint")
+						: QString());
+		row.detail->setVisible(!row.detail->text().isEmpty());
+		setState(row.detail, "state", winner == t ? "won" : point ? "point" : "");
+		setState(row.card, "winner", winner == t);
 		rps_[t]->setText(name);
 		gameWin_[t]->setText(name);
 	}
 
-	QStringList info;
 	std::string match = hd::matchName(state, sb);
-	if (!match.empty())
-		info << q(match);
-	int bestOf = hd::bestOf(state, sb);
-	if (bestOf > 0)
-		info << T("HyperDrive.Dock.BestOf").arg(bestOf);
-	matchInfo_->setText(info.join(QStringLiteral(" · ")));
+	round_->setText(q(match).toUpper());
+	QString progress = winner >= 0 ? T("HyperDrive.Dock.SetOver") : T("HyperDrive.Dock.GameN").arg(played + 1);
+	pill_->setText(bestOf > 0 ? QStringLiteral("Bo%1 · %2").arg(bestOf).arg(progress) : progress);
 
 	auto next = hd::nextQueuedSet(state, sb);
 	nextSet_->setText(next ? T("HyperDrive.Dock.NextSet").arg(q(*next)) : T("HyperDrive.Dock.NoNextSet"));
@@ -514,17 +679,6 @@ void HyperDriveDock::refreshBattle(const json &state)
 	battleInfo_->setText(
 		battleValue > 0 ? T(firstTo ? "HyperDrive.Dock.FirstTo" : "HyperDrive.Dock.StockPool").arg(battleValue)
 				: QString());
-}
-
-void HyperDriveDock::refreshStrike(const json &state)
-{
-	hd::StrikeInfo strike = hd::stageStrikeInfo(state, scoreboard());
-	QString text = T("HyperDrive.Dock.GameN").arg(strike.game + 1);
-	if (strike.stageSelected)
-		text += QStringLiteral(" · ") + T("HyperDrive.Dock.Stage").arg(q(strike.stage));
-	else if (strike.active)
-		text += QStringLiteral(" · ") + T("HyperDrive.Dock.Striking");
-	strikeInfo_->setText(text);
 }
 
 void HyperDriveDock::refreshBracket(const json &state)
@@ -586,4 +740,15 @@ void HyperDriveDock::refreshDisplay(const json &state)
 		QListWidgetItem *item = new QListWidgetItem(T("HyperDrive.Dock.NoDisplay"), displayList_);
 		item->setFlags(Qt::NoItemFlags);
 	}
+}
+
+void HyperDriveDock::refreshStrike(const json &state)
+{
+	hd::StrikeInfo strike = hd::stageStrikeInfo(state, scoreboard_);
+	QString text = T("HyperDrive.Dock.GameN").arg(strike.game + 1);
+	if (strike.stageSelected)
+		text += QStringLiteral(" · ") + T("HyperDrive.Dock.Stage").arg(q(strike.stage));
+	else if (strike.active)
+		text += QStringLiteral(" · ") + T("HyperDrive.Dock.Striking");
+	strikeInfo_->setText(text);
 }

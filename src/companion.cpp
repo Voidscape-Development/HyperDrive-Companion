@@ -17,18 +17,20 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 */
 #include "companion.hpp"
 
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 #include <QApplication>
 #include <QMetaObject>
 #include <QPointer>
+#include <QTime>
 
 #include <obs-frontend-api.h>
 #include <obs-module.h>
 #include <util/platform.h>
 
 #include "bracket/paint.hpp"
-#include "core/triggers.hpp"
 #include "plugin-support.h"
 #include "text.hpp"
 
@@ -37,6 +39,11 @@ namespace {
 Companion *companion = nullptr;
 
 const char *kSettingsFile = "settings.json";
+
+QString q(const std::string &s)
+{
+	return QString::fromStdString(s);
+}
 
 QString describe(const hd::Request &request, const hd::CommandResult &result)
 {
@@ -49,6 +56,16 @@ QString describe(const hd::Request &request, const hd::CommandResult &result)
 		.arg(QString::fromStdString(request.path))
 		.arg(result.status)
 		.arg(body.isEmpty() ? T("HyperDrive.Error.Refused") : body);
+}
+
+QString eventText(const hd::TriggerEvent &event)
+{
+	QString text = kindText(event.kind);
+	if (event.scoreboard > 0)
+		text += QStringLiteral(" · SB%1").arg(event.scoreboard);
+	if (!event.param.empty() && event.kind != hd::TriggerKind::Timer)
+		text += QStringLiteral(" · ") + q(event.param);
+	return text;
 }
 
 } // namespace
@@ -70,48 +87,79 @@ void Companion::destroy()
 	companion = nullptr;
 }
 
-Companion::Companion() : client_(std::make_unique<hd::HyperDriveClient>())
+Companion::Companion()
 {
-	sceneTimer_.setSingleShot(true);
-	connect(&sceneTimer_, &QTimer::timeout, this, [this]() {
-		std::string scene = pendingScene_;
-		pendingScene_.clear();
-		switchScene(scene);
-	});
-
-	// The client calls back on its threads: hand it to the UI thread,
-	// once for any number of changes in between
-	client_->setStateCallback([this]() {
-		stateVersion_++;
-		if (!stateQueued_.exchange(true))
-			QMetaObject::invokeMethod(this, [this]() { handleState(); }, Qt::QueuedConnection);
-	});
-	client_->setStatusCallback([this](hd::ConnectionStatus status) {
-		QMetaObject::invokeMethod(
-			this,
-			[this, status]() {
-				if (status != hd::ConnectionStatus::Connected) {
-					lastScores_ = nullptr;
-				} else {
-					layouts(true);
-					if (hd::bracket::Assets *assets = hd::bracket::Assets::instance())
-						assets->retry();
-				}
-				emit statusChanged(static_cast<int>(status));
-			},
-			Qt::QueuedConnection);
-	});
-
 	loadSettings();
-	client_->connect(hd::parseAddress(settings_.host, settings_.port));
+	for (const hd::InstanceConfig &config : settings_.instances)
+		instances_.push_back(connectInstance(config));
+
+	minuteTimer_.setInterval(60 * 1000);
+	connect(&minuteTimer_, &QTimer::timeout, this,
+		[this]() { dispatch({hd::TriggerKind::Timer, 0, std::to_string(++minutes_)}, ""); });
+	minuteTimer_.start();
 }
 
 Companion::~Companion()
 {
-	sceneTimer_.stop();
-	client_->setStateCallback(nullptr);
-	client_->setStatusCallback(nullptr);
-	client_->disconnect();
+	minuteTimer_.stop();
+	for (const auto &drive : instances_) {
+		drive->client->setStateCallback(nullptr);
+		drive->client->setStatusCallback(nullptr);
+		drive->client->disconnect();
+	}
+}
+
+std::shared_ptr<HyperDrive> Companion::connectInstance(const hd::InstanceConfig &config)
+{
+	auto drive = std::make_shared<HyperDrive>();
+	drive->config = config;
+	std::weak_ptr<HyperDrive> weak = drive;
+	// The client calls back on its threads: hand it to the UI thread,
+	// once for any number of changes in between
+	drive->client->setStateCallback([this, weak]() {
+		stateVersion_++;
+		auto d = weak.lock();
+		if (d && !d->stateQueued.exchange(true))
+			QMetaObject::invokeMethod(
+				this,
+				[this, weak]() {
+					if (auto d = weak.lock())
+						handleState(*d);
+				},
+				Qt::QueuedConnection);
+	});
+	drive->client->setStatusCallback([this, weak](hd::ConnectionStatus status) {
+		QMetaObject::invokeMethod(
+			this,
+			[this, weak, status]() {
+				if (auto d = weak.lock())
+					handleStatus(*d, status);
+			},
+			Qt::QueuedConnection);
+	});
+	drive->client->connect(hd::parseAddress(config.host, config.port));
+	return drive;
+}
+
+std::shared_ptr<HyperDrive> Companion::hyperdrive(const std::string &id) const
+{
+	std::lock_guard<std::mutex> lock(instancesMutex_);
+	for (const auto &drive : instances_) {
+		if (drive->config.id == id)
+			return drive;
+	}
+	return instances_.front();
+}
+
+std::vector<std::shared_ptr<HyperDrive>> Companion::hyperdrives() const
+{
+	std::lock_guard<std::mutex> lock(instancesMutex_);
+	return instances_;
+}
+
+std::string Companion::baseUrl(const std::string &id) const
+{
+	return hd::baseUrl(hyperdrive(id)->client->address());
 }
 
 void Companion::loadSettings()
@@ -119,15 +167,8 @@ void Companion::loadSettings()
 	char *path = obs_module_config_path(kSettingsFile);
 	obs_data_t *data = path ? obs_data_create_from_json_file_safe(path, "bak") : nullptr;
 	bfree(path);
-	if (!data)
-		return;
-	obs_data_set_default_string(data, "host", "localhost");
-	obs_data_set_default_int(data, "port", 5500);
-	obs_data_set_default_bool(data, "show_alerts", true);
-	settings_.host = obs_data_get_string(data, "host");
-	settings_.port = static_cast<int>(obs_data_get_int(data, "port"));
-	settings_.hyperdriveDir = obs_data_get_string(data, "hyperdrive_dir");
-	settings_.showAlerts = obs_data_get_bool(data, "show_alerts");
+	const char *json = data ? obs_data_get_json(data) : nullptr;
+	settings_ = hd::globalConfigFromJson(json ? nlohmann::json::parse(json, nullptr, false) : nlohmann::json());
 	obs_data_release(data);
 }
 
@@ -141,47 +182,81 @@ void Companion::saveSettings() const
 	char *path = obs_module_config_path(kSettingsFile);
 	if (!path)
 		return;
-	obs_data_t *data = obs_data_create();
-	obs_data_set_string(data, "host", settings_.host.c_str());
-	obs_data_set_int(data, "port", settings_.port);
-	obs_data_set_string(data, "hyperdrive_dir", settings_.hyperdriveDir.c_str());
-	obs_data_set_bool(data, "show_alerts", settings_.showAlerts);
-	if (!obs_data_save_json_safe(data, path, "tmp", "bak"))
+	obs_data_t *data = obs_data_create_from_json(hd::toJson(settings_).dump().c_str());
+	if (!data || !obs_data_save_json_safe(data, path, "tmp", "bak"))
 		obs_log(LOG_WARNING, "Couldn't save the settings to %s", path);
 	obs_data_release(data);
 	bfree(path);
 }
 
-void Companion::setSettings(const GlobalSettings &settings)
+void Companion::setSettings(const hd::GlobalConfig &settings)
 {
-	bool addressChanged = settings.host != settings_.host || settings.port != settings_.port;
 	bool dirChanged = settings.hyperdriveDir != settings_.hyperdriveDir;
-	settings_ = settings;
-	hd::Address address = hd::parseAddress(settings_.host, settings_.port);
-	settings_.host = address.host;
-	settings_.port = address.port;
+	settings_ = hd::globalConfigFromJson(hd::toJson(settings));
+	bool addressChanged = false;
+	std::vector<std::shared_ptr<HyperDrive>> next, removed;
+	{
+		std::lock_guard<std::mutex> lock(instancesMutex_);
+		for (hd::InstanceConfig &config : settings_.instances) {
+			hd::Address address = hd::parseAddress(config.host, config.port);
+			config.host = address.host;
+			config.port = address.port;
+			auto it = std::find_if(instances_.begin(), instances_.end(),
+					       [&](const auto &d) { return d->config.id == config.id; });
+			if (it == instances_.end()) {
+				next.push_back(connectInstance(config));
+				continue;
+			}
+			if ((*it)->config.host != config.host || (*it)->config.port != config.port) {
+				(*it)->client->connect(address);
+				addressChanged = true;
+			}
+			(*it)->config = config;
+			next.push_back(*it);
+		}
+		for (const auto &drive : instances_) {
+			if (std::find(next.begin(), next.end(), drive) == next.end())
+				removed.push_back(drive);
+		}
+		instances_ = next;
+	}
+	for (const auto &drive : removed) {
+		drive->client->setStateCallback(nullptr);
+		drive->client->setStatusCallback(nullptr);
+		drive->client->disconnect();
+	}
 	saveSettings();
 
-	if (addressChanged) {
-		client_->connect(address);
+	if (addressChanged || !removed.empty()) {
 		updateLayoutSources();
 		if (hd::bracket::Assets *assets = hd::bracket::Assets::instance())
 			assets->clear();
 	}
-	if (addressChanged || dirChanged)
-		layouts(true);
+	if (addressChanged || dirChanged) {
+		// Listed again when asked for, or once connected
+		for (const auto &drive : next) {
+			std::lock_guard<std::mutex> lock(drive->layoutsMutex);
+			drive->layoutsLoaded = false;
+		}
+	}
 	emit settingsChanged();
 }
 
-std::string Companion::baseUrl() const
+std::string Companion::dockInstance() const
 {
-	return hd::baseUrl(hd::parseAddress(settings_.host, settings_.port));
+	return hyperdrive(settings_.dockInstance)->config.id;
+}
+
+void Companion::setDockInstance(const std::string &id)
+{
+	settings_.dockInstance = id;
+	saveSettings();
+	emit settingsChanged();
 }
 
 void Companion::setConfig(const hd::CollectionConfig &config)
 {
 	config_ = config;
-	hotkeyScoreboard_ = config_.hotkeyScoreboard;
 	obs_frontend_save();
 	emit configChanged();
 }
@@ -193,21 +268,21 @@ void Companion::saveCollection(nlohmann::json &out) const
 
 void Companion::loadCollection(const nlohmann::json &in)
 {
-	sceneTimer_.stop();
-	pendingScene_.clear();
+	epoch_++;
 	config_ = hd::collectionConfigFromJson(in);
-	hotkeyScoreboard_ = config_.hotkeyScoreboard;
 	emit configChanged();
 }
 
-void Companion::command(const hd::Request &request)
+void Companion::command(const hd::Request &request, const std::string &instance)
 {
+	auto drive = hyperdrive(instance);
 	QPointer<Companion> self(this);
-	client_->command(request, [self, request](const hd::CommandResult &result) {
+	QString name = q(drive->config.name);
+	drive->client->command(request, [self, request, name](const hd::CommandResult &result) {
 		if (result.ok)
 			return;
 		obs_log(LOG_WARNING, "%s failed (%d): %s", request.path.c_str(), result.status, result.body.c_str());
-		QString message = describe(request, result);
+		QString message = name + QStringLiteral(" · ") + describe(request, result);
 		QMetaObject::invokeMethod(
 			qApp,
 			[self, message]() {
@@ -218,78 +293,239 @@ void Companion::command(const hd::Request &request)
 	});
 }
 
-void Companion::commandFromAnyThread(const hd::Request &request)
+void Companion::hotkeyFromAnyThread(const hd::NamedCommand &command)
 {
+	auto make = command.make;
 	if (companion)
-		companion->command(request);
+		QMetaObject::invokeMethod(
+			companion,
+			[make]() {
+				if (!companion)
+					return;
+				const hd::CollectionConfig &config = companion->config_;
+				companion->command(make(config.hotkeyScoreboard), config.hotkeyInstance.empty()
+											  ? companion->dockInstance()
+											  : config.hotkeyInstance);
+			},
+			Qt::QueuedConnection);
 }
 
-std::vector<hd::LayoutFolder> Companion::layouts(bool refresh)
+void Companion::automationHotkeyFromAnyThread(int number)
 {
+	if (companion)
+		QMetaObject::invokeMethod(
+			companion,
+			[number]() {
+				if (companion)
+					companion->dispatch({hd::TriggerKind::Hotkey, 0, std::to_string(number)}, "");
+			},
+			Qt::QueuedConnection);
+}
+
+std::vector<hd::LayoutFolder> Companion::layouts(const std::string &instance, bool refresh)
+{
+	auto drive = hyperdrive(instance);
 	{
-		std::lock_guard<std::mutex> lock(layoutsMutex_);
-		if (layoutsLoaded_ && !refresh)
-			return layouts_;
+		std::lock_guard<std::mutex> lock(drive->layoutsMutex);
+		if (drive->layoutsLoaded && !refresh)
+			return drive->layouts;
 	}
 	std::vector<hd::LayoutFolder> found;
 	bool fromServer = false;
-	if (client_->status() == hd::ConnectionStatus::Connected || refresh) {
-		hd::CommandResult result = client_->commandSync(hd::layouts(), 2);
+	if (drive->client->status() == hd::ConnectionStatus::Connected || refresh) {
+		hd::CommandResult result = drive->client->commandSync(hd::layouts(), 2);
 		if (result.ok) {
 			found = hd::parseLayouts(nlohmann::json::parse(result.body, nullptr, false));
 			fromServer = !found.empty();
 		} else {
-			obs_log(LOG_WARNING, "Couldn't get the layouts from HyperDrive (%d): %s", result.status,
-				result.body.substr(0, 200).c_str());
+			obs_log(LOG_WARNING, "Couldn't get the layouts from %s (%d): %s", drive->config.name.c_str(),
+				result.status, result.body.substr(0, 200).c_str());
 		}
 	}
 	if (found.empty())
 		found = hd::scanLayouts(settings_.hyperdriveDir);
 
-	std::lock_guard<std::mutex> lock(layoutsMutex_);
-	layouts_ = found;
-	layoutsLoaded_ = true;
-	layoutsFromServer_ = fromServer;
-	return layouts_;
+	std::lock_guard<std::mutex> lock(drive->layoutsMutex);
+	drive->layouts = found;
+	drive->layoutsLoaded = true;
+	drive->layoutsFromServer = fromServer;
+	return found;
 }
 
-bool Companion::layoutsFromServer() const
+bool Companion::layoutsFromServer(const std::string &instance) const
 {
-	std::lock_guard<std::mutex> lock(layoutsMutex_);
-	return layoutsFromServer_;
+	auto drive = hyperdrive(instance);
+	std::lock_guard<std::mutex> lock(drive->layoutsMutex);
+	return drive->layoutsFromServer;
 }
 
-void Companion::handleState()
+void Companion::handleState(HyperDrive &drive)
 {
-	stateQueued_ = false;
-	runAutomation(client_->statePart("score"));
-	emit stateChanged();
+	drive.stateQueued = false;
+	nlohmann::json snapshot;
+	drive.client->withState([&snapshot](const nlohmann::json &state) { snapshot = hd::triggerSnapshot(state); });
+	nlohmann::json before = std::move(drive.snapshot);
+	drive.snapshot = std::move(snapshot);
+	if (!before.is_null()) {
+		for (const hd::TriggerEvent &event : hd::detectTriggers(before, drive.snapshot))
+			dispatch(event, drive.config.id);
+	}
+	emit stateChanged(q(drive.config.id));
 }
 
-void Companion::runAutomation(const nlohmann::json &scores)
+void Companion::handleStatus(HyperDrive &drive, hd::ConnectionStatus status)
 {
-	nlohmann::json after = nlohmann::json::object();
-	if (!scores.is_null())
-		after["score"] = scores;
-	nlohmann::json before = nlohmann::json::object();
-	if (!lastScores_.is_null())
-		before["score"] = lastScores_;
-	lastScores_ = scores;
+	std::string id = drive.config.id;
+	if (status == hd::ConnectionStatus::Connected) {
+		layouts(id, true);
+		if (hd::bracket::Assets *assets = hd::bracket::Assets::instance())
+			assets->retry();
+		if (!drive.wasConnected)
+			dispatch({hd::TriggerKind::Connected}, id);
+		drive.wasConnected = true;
+	} else {
+		drive.snapshot = nullptr;
+		if (status == hd::ConnectionStatus::Disconnected && drive.wasConnected) {
+			drive.wasConnected = false;
+			dispatch({hd::TriggerKind::Disconnected}, id);
+		}
+	}
+	emit statusChanged(q(id));
+}
 
-	if (!config_.automationEnabled || config_.rules.empty())
+// ---------------------------------------------------------------------
+// Automation
+
+void Companion::dispatch(const hd::TriggerEvent &event, const std::string &instance)
+{
+	if (!config_.automationEnabled)
 		return;
-	std::vector<hd::TriggerEvent> events = hd::detectTriggers(before, after);
-	if (events.empty())
-		return;
-	int index = hd::matchRule(config_.rules, events, currentSceneName());
-	if (index < 0)
-		return;
-	const hd::AutomationRule &rule = config_.rules[static_cast<size_t>(index)];
-	obs_log(LOG_INFO, "%s: switching to \"%s\" in %d ms", hd::triggerId(rule.trigger), rule.scene.c_str(),
-		rule.delayMs);
-	// A later event replaces a switch still waiting
-	pendingScene_ = rule.scene;
-	sceneTimer_.start(rule.delayMs);
+	hd::ConditionContext context;
+	context.scene = currentSceneName();
+	context.scoreboard = event.scoreboard;
+	context.recording = obs_frontend_recording_active();
+	context.streaming = obs_frontend_streaming_active();
+	context.replayBuffer = obs_frontend_replay_buffer_active();
+	for (const auto &drive : hyperdrives()) {
+		if (drive->client->status() == hd::ConnectionStatus::Connected)
+			context.connected.push_back(drive->config.id);
+	}
+	// A copy: the actions run later, the config may change in between
+	std::vector<hd::Rule> rules = config_.rules;
+	for (const hd::Rule &rule : rules) {
+		if (!hd::ruleArmed(config_, rule) || !hd::ruleMatches(rule, event, instance))
+			continue;
+		// The event's instance, or the rule's for OBS's events
+		std::string on = instance.empty() ? rule.instance : instance;
+		bool holds = false;
+		hyperdrive(on)->client->withState([&](const nlohmann::json &state) {
+			context.state = &state;
+			holds = hd::conditionsHold(rule, context);
+		});
+		context.state = nullptr;
+		if (holds)
+			run(rule, on, event.scoreboard, eventText(event));
+	}
+}
+
+void Companion::testRule(const hd::Rule &rule)
+{
+	run(rule, rule.instance, rule.scoreboard, T("HyperDrive.Automation.TestRun"));
+}
+
+void Companion::run(const hd::Rule &rule, const std::string &instance, int scoreboard, const QString &why)
+{
+	auto drive = hyperdrive(instance);
+	log(QStringLiteral("%1 · %2 → %3")
+		    .arg(q(drive->config.name), why, rule.name.empty() ? kindText(rule.trigger) : q(rule.name)));
+	runActions(std::make_shared<std::vector<hd::Action>>(rule.actions), 0, drive->config.id, scoreboard, epoch_);
+}
+
+void Companion::runActions(std::shared_ptr<std::vector<hd::Action>> actions, size_t index, const std::string &instance,
+			   int scoreboard, uint64_t epoch)
+{
+	for (; index < actions->size() && epoch == epoch_; index++) {
+		const hd::Action &action = (*actions)[index];
+		if (action.kind == hd::ActionKind::Wait) {
+			int ms = std::max(0, std::atoi(action.value.c_str()));
+			QTimer::singleShot(ms, this, [this, actions, index, instance, scoreboard, epoch]() {
+				runActions(actions, index + 1, instance, scoreboard, epoch);
+			});
+			return;
+		}
+		runAction(action, instance, scoreboard);
+	}
+}
+
+void Companion::runAction(const hd::Action &a, const std::string &instance, int scoreboard)
+{
+	using K = hd::ActionKind;
+	switch (a.kind) {
+	case K::SwitchScene:
+		switchScene(a.target);
+		break;
+	case K::ShowLayouts:
+	case K::HideLayouts:
+		if (auto target = hd::DisplayTarget::parse(a.target))
+			command(hd::display::set(*target, a.kind == K::ShowLayouts ? hd::display::Action::Show
+										   : hd::display::Action::Hide),
+				instance);
+		break;
+	case K::ShowSource:
+	case K::HideSource: {
+		obs_source_t *sceneSource = a.value.empty() ? obs_frontend_get_current_scene()
+							    : obs_get_source_by_name(a.value.c_str());
+		obs_scene_t *scene = obs_scene_from_source(sceneSource);
+		obs_sceneitem_t *item = scene ? obs_scene_find_source_recursive(scene, a.target.c_str()) : nullptr;
+		if (item)
+			obs_sceneitem_set_visible(item, a.kind == K::ShowSource);
+		else
+			obs_log(LOG_WARNING, "Source \"%s\" not found in the scene", a.target.c_str());
+		obs_source_release(sceneSource);
+		break;
+	}
+	case K::ToggleFilter: {
+		obs_source_t *source = obs_get_source_by_name(a.target.c_str());
+		obs_source_t *filter = source ? obs_source_get_filter_by_name(source, a.value.c_str()) : nullptr;
+		if (filter)
+			obs_source_set_enabled(filter, !obs_source_enabled(filter));
+		else
+			obs_log(LOG_WARNING, "Filter \"%s\" of \"%s\" not found", a.value.c_str(), a.target.c_str());
+		obs_source_release(filter);
+		obs_source_release(source);
+		break;
+	}
+	case K::Command: {
+		int sb = std::atoi(a.value.c_str());
+		if (auto request = hd::namedCommand(a.target, sb > 0 ? sb : std::max(1, scoreboard)))
+			command(*request, instance);
+		break;
+	}
+	case K::StartRecording:
+		if (!obs_frontend_recording_active())
+			obs_frontend_recording_start();
+		break;
+	case K::StopRecording:
+		if (obs_frontend_recording_active())
+			obs_frontend_recording_stop();
+		break;
+	case K::SaveReplay:
+		obs_frontend_replay_buffer_save();
+		break;
+	case K::Wait:
+	case K::Count:
+		break;
+	}
+}
+
+void Companion::log(const QString &line)
+{
+	QString entry = QTime::currentTime().toString(QStringLiteral("HH:mm:ss  ")) + line;
+	obs_log(LOG_INFO, "%s", line.toUtf8().constData());
+	log_.append(entry);
+	while (log_.size() > 100)
+		log_.removeFirst();
+	emit automationRan(entry);
 }
 
 void Companion::switchScene(const std::string &scene)
@@ -301,7 +537,7 @@ void Companion::switchScene(const std::string &scene)
 		obs_log(LOG_WARNING, "Scene \"%s\" not found", scene.c_str());
 		return;
 	}
-	if (obs_source_is_scene(source)) {
+	if (obs_source_is_scene(source) && scene != currentSceneName()) {
 		if (obs_frontend_preview_program_mode_active()) {
 			// Studio Mode: take it live, through the preview
 			obs_frontend_set_current_preview_scene(source);
@@ -315,17 +551,17 @@ void Companion::switchScene(const std::string &scene)
 
 void Companion::onSceneChanged()
 {
-	std::string scene = currentSceneName();
-	for (const hd::SceneDisplayRule &rule : hd::sceneDisplayRules(config_.sceneDisplay, scene)) {
-		if (auto target = hd::DisplayTarget::parse(rule.target))
-			command(hd::display::set(*target, rule.action));
-	}
+	dispatch({hd::TriggerKind::SceneLive, 0, currentSceneName()}, "");
+}
+
+void Companion::onObsEvent(hd::TriggerKind kind)
+{
+	dispatch({kind}, "");
 }
 
 void Companion::onCollectionChanging()
 {
-	sceneTimer_.stop();
-	pendingScene_.clear();
+	epoch_++;
 }
 
 std::string Companion::currentSceneName()
@@ -356,4 +592,16 @@ void Companion::updateLayoutSources()
 			return true;
 		},
 		nullptr);
+}
+
+obs_property *addInstanceList(obs_properties *props)
+{
+	obs_property_t *list = obs_properties_add_list(props, "instance", obs_module_text("HyperDrive.Instance"),
+						       OBS_COMBO_TYPE_LIST, OBS_COMBO_FORMAT_STRING);
+	obs_property_list_add_string(list, obs_module_text("HyperDrive.Instance.Default"), "");
+	if (Companion *companion = Companion::instance()) {
+		for (const auto &drive : companion->hyperdrives())
+			obs_property_list_add_string(list, drive->config.name.c_str(), drive->config.id.c_str());
+	}
+	return list;
 }

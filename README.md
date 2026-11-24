@@ -4,6 +4,8 @@ An OBS Studio plugin for [HyperDrive](https://github.com/Voidscape-Development/H
 stream helper for fighting game tournaments. It runs HyperDrive from inside OBS and ties your
 scenes to what happens in HyperDrive:
 
+- **Several HyperDrives at once**: every setup, station or side stream at the event, each with a
+  name and a color. The dock, the sources, the hotkeys and the rules each pick one.
 - **A HyperDrive dock** with the scoreboard (scores, swap, team colors, resets), the stream
   queue, the crew battle, the stage strike, the bracket focus and the Display Controls, live from
   HyperDrive.
@@ -11,10 +13,11 @@ scenes to what happens in HyperDrive:
   (scoreboard, display groups, bracket channel). No more typing URLs or browsing for `.html` files.
 - **A HyperDrive Bracket Focus source**: HyperDrive's zooming bracket (`bracket_focus`), drawn by
   OBS itself instead of a browser, so its camera moves stay smooth on any bracket.
-- **Scenes › Layouts**: when a scene goes live, show or hide HyperDrive layouts with their
-  animations (HyperDrive's Display Controls).
-- **Scene automation**: switch scenes when a set is won, a new set is loaded, the stage strike
-  starts, the stage is picked, or the score changes.
+- **Automation**: rules of *when* something happens (a set is won, match point, the stage is
+  picked, a scene goes live, the stream starts, a hotkey…), *only if* some conditions hold, *then*
+  actions in order: switch scenes, show or hide layouts with their animations, show or hide
+  sources, run any HyperDrive command, record, save the replay buffer, wait. In groups you turn on
+  and off together.
 - **Hotkeys** for everything the dock does.
 
 It needs OBS Studio 33 or newer, on Windows, macOS or Linux, and HyperDrive running on the same
@@ -31,29 +34,35 @@ install it (the Windows and macOS installers, or the `.deb` on Ubuntu). Then res
 ### Connecting
 
 The plugin connects to HyperDrive at `localhost:5500`. If HyperDrive runs on another computer, or
-you changed its port, set its address in **Tools › HyperDrive Companion › Connection**. The dock
-shows whether it's connected, and keeps reconnecting when HyperDrive restarts.
+you changed its port, set its address in **Tools › HyperDrive Companion › Instances**. Add a row
+for every other HyperDrive to connect to at the same time (another station, a side stream), with a
+name and a color tag. The first one is the default: the sources, hotkeys and rules use it unless
+they pick another. Each instance keeps reconnecting when its HyperDrive restarts, without holding
+up the others.
 
 ### The dock
 
-Show it from the **Docks** menu (**HyperDrive**). The picker at the top selects the scoreboard the
-dock controls. Its tabs:
+Show it from the **Docks** menu (**HyperDrive**). The top picks the HyperDrive instance and the
+scoreboard the dock controls (the scoreboard buttons show when there's more than one), with its
+connection status under it. Its tabs:
 
 | Tab | |
 | - | - |
-| Score | The teams, their scores (− / +) and colors (click the swatch), the match and best of, swap and reset |
+| Score | The round, best of and game, the teams with their scores (− / +), match point and set won, their colors (click the stripe), swap, reset and load the next set |
 | Queue | The next set of the stream queue for this scoreboard, and loading it, the set on stream (start.gg) or HyperDrive's set selector |
 | Crew | The crew battle: each team's stocks or games, the active player (pick one), score/undo, next player and resets |
 | Strike | The stage strike: undo, redo, restart, who won rock-paper-scissors and who won the game |
 | Bracket | The bracket focus of a channel: previous/next round, whole bracket, follow the scoreboard, tour |
 | Display | Every layout folder and group HyperDrive knows: uncheck one to play its hide animation, check it to show it again |
 
-When HyperDrive refuses a command (e.g. nothing to undo), the dock says so. You can turn that off
-in the settings.
+When HyperDrive refuses a command (e.g. nothing to undo), the dock says so for a moment. You can
+turn that off in the settings. The bottom says how many automation rules are armed and what the
+last one did; **Edit rules** opens them.
 
 ### HyperDrive Layout source
 
-Add a **HyperDrive Layout** source, then pick the **Layout** (a folder of HyperDrive's `layout/`)
+Add a **HyperDrive Layout** source, pick its **HyperDrive** instance (the default one unless you
+have several), then the **Layout** (a folder of HyperDrive's `layout/`)
 and its **Page**. **See the layout's preview** opens the page's preview image. The options are
 the ones HyperDrive's layouts take in their URL:
 
@@ -83,6 +92,7 @@ and maximum zoom, animation speed), unless the source overrides it.
 
 | Option | |
 | - | - |
+| HyperDrive | The instance whose bracket it shows (the default one by default) |
 | Bracket channel | The channel shown (`main` by default) |
 | Always show the whole bracket | Ignores the focus (`?ignore_focus=1`) |
 | Width, height | 1920x1080 by default; **Use canvas size** sets them to OBS's canvas |
@@ -111,42 +121,69 @@ HyperDrive that places the bracket for it (`bracket.channels.<channel>.placement
 one, the source shows only its title bar. Images (flags, avatars, characters, the logo) and the
 layouts' fonts come from HyperDrive's web server.
 
-### Scenes › Layouts
+### Automation
 
-In **Tools › HyperDrive Companion › Scenes › Layouts**, add rows like
-"when **Break** goes live, **hide** `folder:scoreboard`". Layouts are `all`, `folder:<layout
-folder>` or `group:<group>`. The layouts play their animations, as with HyperDrive's Display
-Controls, instead of being cut by OBS.
+In **Tools › HyperDrive Companion › Automation**, each rule is:
 
-### Scene automation
-
-In **Tools › HyperDrive Companion › Automation**, each rule switches to a scene when something
-happens on a scoreboard (or any scoreboard):
+- **When**: something happens, on a HyperDrive instance (or any) and a scoreboard (or any).
+- **Only if**: conditions that must all hold then.
+- **Then**: actions, run in order.
 
 | When | |
 | - | - |
 | A set is won | A team reaches the games needed for the scoreboard's best of |
 | A new set is loaded | The scoreboard's set changes (by its start.gg/parry.gg id, or its players). Swapping the teams doesn't count |
-| The stage strike starts | The players start striking or picking |
-| The stage is picked | The game's stage is chosen |
 | The score changes | Any point, for the same set |
+| Match point is reached | A team gets one game away from winning the set |
+| The stage strike starts / the stage is picked | The players start striking or picking / the game's stage is chosen |
+| The stream queue's next set changes | The set the scoreboard's stream queue loads next |
+| A crew player is out | A player of the crew battle loses their last stock |
+| The bracket focus changes | On a channel, or any |
+| HyperDrive connects / can't be reached | The instance comes back, or goes away |
+| A scene goes live | A given scene, or any |
+| Recording / the stream starts or stops | OBS's |
+| An automation hotkey is pressed | **HyperDrive: Automation hotkey 1** to **10** in OBS's hotkeys |
+| Every few minutes | Every N minutes |
 
-A rule can wait a few seconds before switching, and can be limited to when a given scene is live
-(e.g. only from **Gameplay**). When several rules match, the first one in the list wins. A
-switch still waiting is replaced by a later one.
+| Only if | |
+| - | - |
+| The scene live is / isn't | A scene |
+| The set is a best of, the round's name has, a team has won (games) | On the event's scoreboard |
+| OBS is recording / streaming, the replay buffer is on | |
+| This HyperDrive is connected | An instance |
+
+| Then | |
+| - | - |
+| Switch scene | In Studio Mode, through the preview and the transition |
+| Show / hide layouts | `all`, `folder:<layout folder>` or `group:<group>`, with their animations, as with HyperDrive's Display Controls |
+| Show / hide a source | In a scene, or the one live |
+| Turn a filter on/off | A source's filter |
+| HyperDrive command | Anything the hotkeys do (scores, swap, resets, load the next set, stage strike, crew battle, Display Controls, bracket focus), on the event's scoreboard or a given one |
+| Wait | Before the next action |
+| Start / stop recording, save the replay buffer | |
+
+Every rule that matches runs. HyperDrive actions go to the instance the event came from (for OBS's
+events: the rule's instance, or the default one). Rules can be put in **groups** (e.g. "Top 8"):
+uncheck a group to turn all its rules off. **Export** saves the rules shown (all, or a group's) to
+a file, and **Import** adds a file's rules, e.g. at the next event. **Test run** runs a rule's
+actions right away. **Activity** shows what ran, and why.
+
+The rules of older versions (one scene switch each) and their **Scenes › Layouts** rows become
+rules the first time a scene collection is loaded.
 
 ### Hotkeys
 
-Set them in OBS's **Settings › Hotkeys**, under the names starting with "HyperDrive". The
-scoreboard ones control the scoreboard picked in **Tools › HyperDrive Companion › Hotkeys**.
+Set them in OBS's **Settings › Hotkeys**, under the names starting with "HyperDrive". They control
+the instance and scoreboard picked in **Tools › HyperDrive Companion › Hotkeys** (by default, the
+instance in the dock). The **Automation hotkey** ones trigger rules.
 
-The rules, the scene/layout rows, the hotkeys' scoreboard and the keys are saved with the scene
-collection. HyperDrive's address is saved for all of them.
+The rules, their groups, the hotkeys' instance and scoreboard and the keys are saved with the scene
+collection. The instances are saved for all of them.
 
 ## How it works
 
-The plugin keeps one connection to HyperDrive's web server, as the layouts and the Stream Deck
-plugin do:
+The plugin keeps one connection to each HyperDrive instance's web server, as the layouts and the
+Stream Deck plugin do:
 
 - **State**: socket.io (Engine.IO 4 over a WebSocket). HyperDrive sends the whole program state
   when the plugin connects (`program_state`), then the changes (`program_state_update`), which are
@@ -157,13 +194,13 @@ plugin do:
 
 | | |
 | - | - |
-| `src/core/` | Everything that doesn't need OBS or Qt, unit tested: the Engine.IO/socket.io packets, the state and what's read from it, the links, the trigger detection, the layout list, the saved config, the bracket focus's theme, focus and camera |
+| `src/core/` | Everything that doesn't need OBS or Qt, unit tested: the Engine.IO/socket.io packets, the state and what's read from it, the links, the automation (triggers, rule matching, conditions), the layout list, the saved config (instances, rules, groups, and the migration of older ones), the bracket focus's theme, focus and camera |
 | `src/net/` | The connection, with [IXWebSocket](https://github.com/machinezone/IXWebSocket) |
-| `src/companion.*` | The hub on OBS's UI thread: the connection, the settings, the layout list and the automation |
+| `src/companion.*` | The hub on OBS's UI thread: the instances' connections, the settings, the layout lists and the automation (running the rules' actions) |
 | `src/layout-source.*` | The HyperDrive Layout source, wrapping a private Browser source |
 | `src/bracket/` | The HyperDrive Bracket Focus source (`source.*`) and its pieces' painting (`paint.*`); what it shows (placement, theme, focus, camera) is in `src/core/bracket-focus.*` |
 | `src/hotkeys.*` | The hotkeys |
-| `src/ui/` | The dock and the settings dialog (Qt) |
+| `src/ui/` | The dock and the settings dialog (Qt), and what they share (`style.hpp`) |
 | `src/plugin-main.cpp` | Registers everything, and saves to/loads from the scene collection |
 | `tests/` | The unit tests of `src/core/` |
 | `data/locale/en-US.ini` | The plugin's text |

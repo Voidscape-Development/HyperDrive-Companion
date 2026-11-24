@@ -18,9 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #pragma once
 
 /*
- * What happened between two program states, for the scene automation:
- * a set finished or was loaded, the stage strike started or ended, the
- * score changed.
+ * The automation: what happened between two program states, which rules an
+ * event runs, and whether their conditions hold.
  */
 
 #include <string>
@@ -33,29 +32,52 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 namespace hd {
 
 struct TriggerEvent {
+	TriggerEvent(TriggerKind kind_, int scoreboard_ = 0, std::string param_ = {})
+		: kind(kind_),
+		  scoreboard(scoreboard_),
+		  param(std::move(param_))
+	{
+	}
+
 	TriggerKind kind;
-	int scoreboard;
+	/** 0 when not on a scoreboard */
+	int scoreboard = 0;
+	/** SceneLive: scene; Hotkey: number; Timer: minutes since start; BracketFocusChanged: channel */
+	std::string param;
 
 	bool operator==(const TriggerEvent &other) const
 	{
-		return kind == other.kind && scoreboard == other.scoreboard;
+		return kind == other.kind && scoreboard == other.scoreboard && param == other.param;
 	}
 };
 
+/** The parts of the state detectTriggers reads (to keep a copy between changes) */
+nlohmann::json triggerSnapshot(const nlohmann::json &state);
+
 /**
- * The events between two states, by scoreboard. Nothing when there was no
+ * The events between two states (or snapshots). Nothing when there was no
  * state before (the plugin just connected).
  */
 std::vector<TriggerEvent> detectTriggers(const nlohmann::json &before, const nlohmann::json &after);
 
-/**
- * The rule to run for these events: the first enabled rule (in the list's
- * order) that matches one of them and the scene on program. -1 if none.
- */
-int matchRule(const std::vector<AutomationRule> &rules, const std::vector<TriggerEvent> &events,
-	      const std::string &currentScene);
+/** The rule runs for this event, from this instance ("" for OBS's events) */
+bool ruleMatches(const Rule &rule, const TriggerEvent &event, const std::string &instance);
 
-/** The scene-display rules for a scene, in order */
-std::vector<SceneDisplayRule> sceneDisplayRules(const std::vector<SceneDisplayRule> &rules, const std::string &scene);
+struct ConditionContext {
+	/** The scene on program */
+	std::string scene;
+	/** The state of the rule's instance, or null */
+	const nlohmann::json *state = nullptr;
+	/** The event's scoreboard, 0 for none (1 is used) */
+	int scoreboard = 0;
+	bool recording = false;
+	bool streaming = false;
+	bool replayBuffer = false;
+	/** Ids of the connected instances */
+	std::vector<std::string> connected;
+};
+
+bool conditionHolds(const Condition &condition, const ConditionContext &context);
+bool conditionsHold(const Rule &rule, const ConditionContext &context);
 
 } // namespace hd

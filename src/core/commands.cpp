@@ -244,4 +244,142 @@ Request layouts()
 	return {"/layouts"};
 }
 
+const std::vector<NamedCommand> &namedCommands()
+{
+	using SC = stageStrike::Command;
+	using BF = bracketFocus::Mode;
+	static const std::vector<NamedCommand> all = {
+		{"team1.scoreup", "HyperDrive.Hotkey.Team1ScoreUp",
+		 [](int sb) {
+			 return scoreboard::scoreUp(sb, 1);
+		 }},
+		{"team1.scoredown", "HyperDrive.Hotkey.Team1ScoreDown",
+		 [](int sb) {
+			 return scoreboard::scoreDown(sb, 1);
+		 }},
+		{"team2.scoreup", "HyperDrive.Hotkey.Team2ScoreUp",
+		 [](int sb) {
+			 return scoreboard::scoreUp(sb, 2);
+		 }},
+		{"team2.scoredown", "HyperDrive.Hotkey.Team2ScoreDown",
+		 [](int sb) {
+			 return scoreboard::scoreDown(sb, 2);
+		 }},
+		{"swap", "HyperDrive.Hotkey.Swap",
+		 [](int sb) {
+			 return scoreboard::swapTeams(sb);
+		 }},
+		{"reset_scores", "HyperDrive.Hotkey.ResetScores",
+		 [](int sb) {
+			 return scoreboard::reset(sb, scoreboard::ResetKind::Scores);
+		 }},
+		{"reset_match", "HyperDrive.Hotkey.ResetMatch",
+		 [](int sb) {
+			 return scoreboard::reset(sb, scoreboard::ResetKind::Match);
+		 }},
+		{"load_next", "HyperDrive.Hotkey.LoadNext",
+		 [](int sb) {
+			 return scoreboard::loadNextQueued(sb);
+		 }},
+		{"pull_stream", "HyperDrive.Hotkey.PullStream",
+		 [](int sb) {
+			 return scoreboard::pullStreamSet(sb);
+		 }},
+		{"strike.undo", "HyperDrive.Hotkey.StrikeUndo",
+		 [](int sb) {
+			 return stageStrike::run(sb, SC::Undo);
+		 }},
+		{"strike.redo", "HyperDrive.Hotkey.StrikeRedo",
+		 [](int sb) {
+			 return stageStrike::run(sb, SC::Redo);
+		 }},
+		{"strike.reset", "HyperDrive.Hotkey.StrikeReset",
+		 [](int sb) {
+			 return stageStrike::run(sb, SC::Reset);
+		 }},
+		{"strike.rps1", "HyperDrive.Hotkey.StrikeRps1",
+		 [](int sb) {
+			 return stageStrike::run(sb, SC::RpsWin, 1);
+		 }},
+		{"strike.rps2", "HyperDrive.Hotkey.StrikeRps2",
+		 [](int sb) {
+			 return stageStrike::run(sb, SC::RpsWin, 2);
+		 }},
+		{"strike.win1", "HyperDrive.Hotkey.StrikeWin1",
+		 [](int sb) {
+			 return stageStrike::run(sb, SC::GameWin, 1);
+		 }},
+		{"strike.win2", "HyperDrive.Hotkey.StrikeWin2",
+		 [](int sb) {
+			 return stageStrike::run(sb, SC::GameWin, 2);
+		 }},
+		{"battle.team1.scoreup", "HyperDrive.Hotkey.Battle1ScoreUp",
+		 [](int) {
+			 return teamBattle::scoreUp(1);
+		 }},
+		{"battle.team1.scoredown", "HyperDrive.Hotkey.Battle1ScoreDown",
+		 [](int) {
+			 return teamBattle::scoreDown(1);
+		 }},
+		{"battle.team2.scoreup", "HyperDrive.Hotkey.Battle2ScoreUp",
+		 [](int) {
+			 return teamBattle::scoreUp(2);
+		 }},
+		{"battle.team2.scoredown", "HyperDrive.Hotkey.Battle2ScoreDown",
+		 [](int) {
+			 return teamBattle::scoreDown(2);
+		 }},
+		{"battle.team1.next", "HyperDrive.Hotkey.Battle1Next",
+		 [](int) {
+			 return teamBattle::nextPlayer(1);
+		 }},
+		{"battle.team2.next", "HyperDrive.Hotkey.Battle2Next",
+		 [](int) {
+			 return teamBattle::nextPlayer(2);
+		 }},
+		{"battle.reset_stocks", "HyperDrive.Hotkey.BattleResetStocks",
+		 [](int) {
+			 return teamBattle::resetStocks();
+		 }},
+		{"display.toggle_all", "HyperDrive.Hotkey.DisplayToggleAll",
+		 [](int) {
+			 return display::set(DisplayTarget(), display::Action::Toggle);
+		 }},
+		{"display.show_all", "HyperDrive.Hotkey.DisplayShowAll",
+		 [](int) {
+			 return display::set(DisplayTarget(), display::Action::Show);
+		 }},
+		{"display.hide_all", "HyperDrive.Hotkey.DisplayHideAll",
+		 [](int) {
+			 return display::set(DisplayTarget(), display::Action::Hide);
+		 }},
+		{"bracket.all", "HyperDrive.Hotkey.BracketAll",
+		 [](int) {
+			 return bracketFocus::set(BF::All);
+		 }},
+		{"bracket.next", "HyperDrive.Hotkey.BracketNext",
+		 [](int) {
+			 return bracketFocus::set(BF::NextRound);
+		 }},
+		{"bracket.previous", "HyperDrive.Hotkey.BracketPrevious",
+		 [](int) {
+			 return bracketFocus::set(BF::PreviousRound);
+		 }},
+		{"bracket.follow", "HyperDrive.Hotkey.BracketFollow",
+		 [](int sb) {
+			 return bracketFocus::set(BF::Follow, "main", sb);
+		 }},
+	};
+	return all;
+}
+
+std::optional<Request> namedCommand(const std::string &id, int sb)
+{
+	for (const NamedCommand &command : namedCommands()) {
+		if (id == command.id)
+			return command.make(sb);
+	}
+	return std::nullopt;
+}
+
 } // namespace hd

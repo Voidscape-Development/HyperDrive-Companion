@@ -83,6 +83,17 @@ void onFrontendEvent(enum obs_frontend_event event, void *)
 		if (companion)
 			companion->onSceneChanged();
 		break;
+	case OBS_FRONTEND_EVENT_RECORDING_STARTED:
+	case OBS_FRONTEND_EVENT_RECORDING_STOPPED:
+	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
+	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
+		if (companion)
+			companion->onObsEvent(
+				event == OBS_FRONTEND_EVENT_RECORDING_STARTED   ? hd::TriggerKind::RecordingStarted
+				: event == OBS_FRONTEND_EVENT_RECORDING_STOPPED ? hd::TriggerKind::RecordingStopped
+				: event == OBS_FRONTEND_EVENT_STREAMING_STARTED ? hd::TriggerKind::StreamingStarted
+										: hd::TriggerKind::StreamingStopped);
+		break;
 	case OBS_FRONTEND_EVENT_SCENE_COLLECTION_CHANGING:
 		if (companion)
 			companion->onCollectionChanging();

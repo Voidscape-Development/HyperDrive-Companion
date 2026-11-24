@@ -18,6 +18,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include "triggers.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <map>
 
 #include "state.hpp"
@@ -58,7 +60,37 @@ bool scoresChanged(const ScoreSnapshot &before, const ScoreSnapshot &after)
 	return before.scores[0] != after.scores[0] || before.scores[1] != after.scores[1];
 }
 
+int deadPlayers(const nlohmann::json &state)
+{
+	int dead = 0;
+	for (int t = 1; t <= 2; t++) {
+		if (auto team = teamBattleTeam(state, t))
+			dead += static_cast<int>(std::count_if(team->players.begin(), team->players.end(),
+							       [](const BattlePlayer &p) { return p.dead; }));
+	}
+	return dead;
+}
+
+std::string lower(std::string s)
+{
+	for (char &c : s)
+		c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+	return s;
+}
+
 } // namespace
+
+nlohmann::json triggerSnapshot(const nlohmann::json &state)
+{
+	nlohmann::json snapshot = nlohmann::json::object();
+	for (const char *key : {"score", "stream_queue", "team_battle"}) {
+		if (const nlohmann::json *part = get(state, key))
+			snapshot[key] = *part;
+	}
+	if (const nlohmann::json *focus = get(state, "bracket.focus"))
+		snapshot["bracket"]["focus"] = *focus;
+	return snapshot;
+}
 
 std::vector<TriggerEvent> detectTriggers(const nlohmann::json &before, const nlohmann::json &after)
 {
@@ -84,6 +116,8 @@ std::vector<TriggerEvent> detectTriggers(const nlohmann::json &before, const nlo
 				int wins = winsNeeded(bestOf(after, sb));
 				if (wins > 0 && scoresBefore.best < wins && scoresAfter.best >= wins)
 					events.push_back({TriggerKind::SetFinished, sb});
+				if (wins > 1 && scoresBefore.best < wins - 1 && scoresAfter.best == wins - 1)
+					events.push_back({TriggerKind::MatchPoint, sb});
 				events.push_back({TriggerKind::ScoreChanged, sb});
 			}
 		}
@@ -94,38 +128,80 @@ std::vector<TriggerEvent> detectTriggers(const nlohmann::json &before, const nlo
 			events.push_back({TriggerKind::StrikeStarted, sb});
 		if (!strikeBefore.stageSelected && strikeAfter.stageSelected)
 			events.push_back({TriggerKind::StrikeEnded, sb});
+		if (nextQueuedSet(before, sb) != nextQueuedSet(after, sb))
+			events.push_back({TriggerKind::QueueChanged, sb});
+	}
+
+	if (deadPlayers(after) > deadPlayers(before))
+		events.push_back({TriggerKind::BattlePlayerOut});
+
+	const nlohmann::json *focusBefore = get(before, "bracket.focus");
+	const nlohmann::json *focusAfter = get(after, "bracket.focus");
+	if (focusAfter && focusAfter->is_object()) {
+		for (auto it = focusAfter->begin(); it != focusAfter->end(); ++it) {
+			bool same = focusBefore && focusBefore->is_object() && focusBefore->contains(it.key()) &&
+				    (*focusBefore)[it.key()] == it.value();
+			if (!same)
+				events.push_back({TriggerKind::BracketFocusChanged, 0, it.key()});
+		}
 	}
 	return events;
 }
 
-int matchRule(const std::vector<AutomationRule> &rules, const std::vector<TriggerEvent> &events,
-	      const std::string &currentScene)
+bool ruleMatches(const Rule &rule, const TriggerEvent &event, const std::string &instance)
 {
-	for (size_t i = 0; i < rules.size(); i++) {
-		const AutomationRule &rule = rules[i];
-		if (!rule.enabled || rule.scene.empty())
-			continue;
-		if (!rule.fromScene.empty() && rule.fromScene != currentScene)
-			continue;
-		// Already there
-		if (rule.scene == currentScene)
-			continue;
-		for (const TriggerEvent &event : events) {
-			if (event.kind == rule.trigger && (rule.scoreboard == 0 || rule.scoreboard == event.scoreboard))
-				return static_cast<int>(i);
-		}
+	if (rule.trigger != event.kind)
+		return false;
+	if (triggerOfInstance(rule.trigger) && !rule.instance.empty() && rule.instance != instance)
+		return false;
+	if (triggerHasScoreboard(rule.trigger) && rule.scoreboard != 0 && rule.scoreboard != event.scoreboard)
+		return false;
+	if (rule.trigger == TriggerKind::Timer) {
+		int every = std::atoi(rule.param.c_str());
+		return every > 0 && std::atoi(event.param.c_str()) % every == 0;
 	}
-	return -1;
+	return rule.param.empty() || rule.param == event.param;
 }
 
-std::vector<SceneDisplayRule> sceneDisplayRules(const std::vector<SceneDisplayRule> &rules, const std::string &scene)
+bool conditionHolds(const Condition &c, const ConditionContext &context)
 {
-	std::vector<SceneDisplayRule> result;
-	for (const SceneDisplayRule &rule : rules) {
-		if (rule.scene == scene)
-			result.push_back(rule);
+	int sb = context.scoreboard > 0 ? context.scoreboard : 1;
+	int n = std::atoi(c.value.c_str());
+	switch (c.kind) {
+	case ConditionKind::SceneIs:
+		return context.scene == c.value;
+	case ConditionKind::SceneIsNot:
+		return context.scene != c.value;
+	case ConditionKind::BestOf:
+		return context.state && bestOf(*context.state, sb) == n;
+	case ConditionKind::RoundContains:
+		return context.state && lower(matchName(*context.state, sb)).find(lower(c.value)) != std::string::npos;
+	case ConditionKind::TeamHasGames:
+		for (int t = 1; context.state && t <= 2; t++) {
+			auto team = scoreboardTeam(*context.state, sb, t);
+			if (team && team->score == n)
+				return true;
+		}
+		return false;
+	case ConditionKind::Recording:
+		return context.recording;
+	case ConditionKind::Streaming:
+		return context.streaming;
+	case ConditionKind::ReplayBuffer:
+		return context.replayBuffer;
+	case ConditionKind::InstanceConnected:
+		return std::find(context.connected.begin(), context.connected.end(), c.value) !=
+		       context.connected.end();
+	case ConditionKind::Count:
+		break;
 	}
-	return result;
+	return false;
+}
+
+bool conditionsHold(const Rule &rule, const ConditionContext &context)
+{
+	return std::all_of(rule.conditions.begin(), rule.conditions.end(),
+			   [&](const Condition &c) { return conditionHolds(c, context); });
 }
 
 } // namespace hd
