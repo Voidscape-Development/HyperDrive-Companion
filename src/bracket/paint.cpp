@@ -435,7 +435,13 @@ void drawPlayer(QPainter &p, const Scene &scene, const json &set, int n, const Q
 	const json &team = id.empty() || id == "0" ? none : at(scene.players, id);
 	const json &winner = at(set, "winner");
 	bool won = winner.is_number() && winner.get<int>() == n;
-	bool lost = winner.is_number() && winner.get<int>() == 1 - n;
+	const json &projected = at(set, "projectedWinner");
+	bool lost = (winner.is_number() && winner.get<int>() == 1 - n) ||
+		    (projected.is_number() && projected.get<int>() == 1 - n);
+	// Projected winner: a check, like start.gg, until the set has a score
+	QString scoreLabel = scoreText(set, n);
+	if (scoreLabel.isEmpty() && projected.is_number() && projected.get<int>() == n)
+		scoreLabel = QStringLiteral("\u2713");
 	bool singles = team.is_object() && at(team, "player").is_object() && at(team, "player").size() == 1;
 	const json &player = singles ? at(team, "player").front() : none;
 	double radius = t.radius / 2;
@@ -470,7 +476,7 @@ void drawPlayer(QPainter &p, const Scene &scene, const json &set, int n, const Q
 			// The score, then the flags and the sponsor, from the right
 			QRectF score(right - kScoreW, row.y(), kScoreW, kRowH);
 			q.fillRect(score, won ? QBrush(qcolor(t.winner)) : brush(t.score, score));
-			drawText(q, t, score, scoreText(set, n), font(t, 28), qcolor(won ? t.onWinner : t.scoreText),
+			drawText(q, t, score, scoreLabel, font(t, 28), qcolor(won ? t.onWinner : t.scoreText),
 				 Qt::AlignHCenter);
 			std::vector<std::string> flags;
 			if (t.countryFlag)
