@@ -440,8 +440,9 @@ void drawPlayer(QPainter &p, const Scene &scene, const json &set, int n, const Q
 	const json &player = singles ? at(team, "player").front() : none;
 	double radius = t.radius / 2;
 
+	// .player.projected: not decided yet, projected by seed
 	layer(
-		p, 1,
+		p, truthy(get(slot, "projected")) ? 0.55 : 1,
 		[&](QPainter &q) {
 			// The row is a .container too
 			q.setPen(Qt::NoPen);
