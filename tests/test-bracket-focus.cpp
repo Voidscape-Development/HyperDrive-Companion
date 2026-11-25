@@ -146,7 +146,19 @@ TEST(focus_sets_rounds_and_box)
 	json only = json::parse(R"({"mode": "rounds", "sets": ["b"]})");
 	Focus g = computeFocus(&only, &bracket, placed, theme, world);
 	CHECK(!g.lineFocused(placed.lines[0]));
-	CHECK(g.box == placed.sets["b"]);
+	// w:1's name is far above b: pinned just above it
+	CHECK_EQ(g.pins.size(), 1u);
+	CHECK(g.pins["146:w:1"] == (Box{40, 146, 380, 44}));
+	CHECK(g.box == (Box{40, 146, 380, 138}));
+
+	// Near enough: its own, and nothing pinned
+	json first = json::parse(R"({"mode": "player", "sets": ["a"]})");
+	Focus h = computeFocus(&first, &bracket, placed, theme, world);
+	CHECK(h.pins.empty());
+	CHECK(h.box == (Box{40, 40, 380, 138}));
+
+	theme.roundNames = false;
+	CHECK(computeFocus(&only, &bracket, placed, theme, world).box == placed.sets["b"]);
 }
 
 TEST(camera)

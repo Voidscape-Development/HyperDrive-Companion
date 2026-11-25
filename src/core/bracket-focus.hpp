@@ -44,6 +44,7 @@ constexpr double kPadding = 60;     // around what's in focus, on screen
 constexpr double kLabelRoom = 90;   // above or under it, for the caption
 constexpr double kLabelMargin = 32; // between the caption and the edge
 constexpr double kTitleHeight = 100;
+constexpr double kHeaderRoom = 56; // a round name's above its sets (BracketPlacement.py's HEADER_H)
 constexpr double kFadeTime = 0.6;
 
 struct Box {
@@ -143,7 +144,13 @@ struct Focus {
 	std::string label;
 	/** player mode: the player's slot */
 	std::string player;
-	/** What the camera shows, in world pixels */
+	/**
+	 * Copies of the round names of sets in focus that are far above them
+	 * (the winners side's, in a run through losers), pinned just above
+	 * them: "<y>:<round key>": where
+	 */
+	std::map<std::string, Box> pins;
+	/** What the camera shows, in world pixels, with the round names above it */
 	Box box;
 
 	bool lineFocused(const Line &line) const;

@@ -258,16 +258,17 @@ Focus computeFocus(const json *focus, const json *bracket, const Placement &plac
 
 	// A round is highlighted when it's in focus, or any of its sets is
 	const json *sides = bracket ? get(*bracket, "sides") : nullptr;
+	std::set<std::string> withSets;
 	for (const auto &[key, box] : placed.headers) {
-		bool in = rounds.count(key) > 0;
 		if (sides && sides->is_object())
 			for (const json &columns : *sides)
 				for (const json &column : columns.is_array() ? columns : json::array())
 					if (text(get(column, "key")) == key && column.contains("sets") &&
 					    column["sets"].is_array())
 						for (const json &id : column["sets"])
-							in = in || f.sets.count(text(&id));
-		if (in)
+							if (f.sets.count(text(&id)))
+								withSets.insert(key);
+		if (rounds.count(key) || withSets.count(key))
 			f.rounds.insert(key);
 	}
 
@@ -280,6 +281,21 @@ Focus computeFocus(const json *focus, const json *bracket, const Placement &plac
 	f.box = boxes.empty() ? world : boxes[0];
 	for (const Box &b : boxes)
 		f.box = unite(f.box, b);
+
+	// The round names of the sets in focus above them go just above them:
+	// their own if near enough, else a copy pinned there
+	double top = f.box.y - kHeaderRoom;
+	bool above = false;
+	for (const std::string &key : withSets) {
+		const Box &h = placed.headers.at(key);
+		if (!theme.roundNames || h.y >= f.box.y)
+			continue;
+		above = true;
+		if (h.y < top)
+			f.pins[std::to_string(std::lround(top)) + ":" + key] = {h.x, top, h.w, h.h};
+	}
+	if (above)
+		f.box = unite(f.box, {f.box.x, top, f.box.w, 0});
 	return f;
 }
 
