@@ -118,7 +118,7 @@ size_t hashOf(const std::string &s)
 }
 
 // What's drawn, bottom to top
-enum Kind { kLine, kRound, kByes, kStandings, kSet, kGlowLine, kBar, kRing, kTitle, kLabel };
+enum Kind { kLine, kRound, kByes, kStandings, kSet, kPin, kGlowLine, kBar, kRing, kTitle, kLabel };
 
 /** What the source's thread made of the state: drawn until the next one */
 struct Model {
@@ -499,6 +499,10 @@ public:
 			model->content[keyOf(kRound, key)] = hashOf(name) ^ themeHash;
 			model->content[keyOf(kBar, key)] = themeHash ^ focus.color;
 		}
+		for (const auto &[id, box] : focus.pins) {
+			model->content[keyOf(kPin, id)] = model->content[keyOf(kRound, id.substr(id.find(':') + 1))];
+			model->content[keyOf(kBar, id)] = themeHash ^ focus.color;
+		}
 		const json &byes = model->scene.bracket.contains("byes") ? model->scene.bracket["byes"] : json();
 		for (const auto &[key, box] : model->placed.byes)
 			model->content[keyOf(kByes, key)] =
@@ -527,6 +531,8 @@ public:
 			return paintSet(m.scene, job.id, job.box, job.scale);
 		case kRound:
 			return paintHeader(m.scene, job.id, job.box, job.scale);
+		case kPin:
+			return paintHeader(m.scene, job.id.substr(job.id.find(':') + 1), job.box, job.scale);
 		case kByes:
 			return paintByes(m.scene, job.id, job.box, job.scale);
 		case kStandings:
@@ -538,7 +544,7 @@ public:
 		case kRing:
 			return paintRing(m.placed.sets.at(job.id), theme, m.focus.color, job.scale, false);
 		case kBar:
-			return paintRing(m.placed.headers.at(job.id), theme, m.focus.color, job.scale, true);
+			return paintRing(job.box, theme, m.focus.color, job.scale, true);
 		case kTitle:
 			return paintTitle(m.title, theme, m.width / m.titleScale, job.scale, m.titleStyle);
 		case kLabel:
@@ -704,9 +710,16 @@ public:
 									: kBar,
 						      e.id));
 		}
+		// The pinned round names, and their outlines when they have them
+		for (const auto &[id, box] : f.pins) {
+			outlined.insert(keyOf(kPin, id));
+			if (f.glow)
+				outlined.insert(keyOf(kBar, id));
+		}
 		// The outlines: coming and going together
 		for (auto &[key, e] : elements_) {
-			if ((e.kind == kRing || e.kind == kGlowLine || e.kind == kBar) && !outlined.count(key)) {
+			if ((e.kind == kRing || e.kind == kGlowLine || e.kind == kBar || e.kind == kPin) &&
+			    !outlined.count(key)) {
 				e.opacity.go(0, t, fade);
 				e.gone = true;
 			}
@@ -717,9 +730,10 @@ public:
 			std::string id = key.substr(key.find(':') + 1);
 			Element &e = exists ? elements_[key]
 					    : add(kind, id,
-						  kind == kGlowLine ? grow(m.placed.lines[std::stoi(id)].bounds(), 8)
-						  : kind == kRing   ? grow(m.placed.sets.at(id), 36)
-								    : m.placed.headers.at(id),
+						  kind == kGlowLine  ? grow(m.placed.lines[std::stoi(id)].bounds(), 8)
+						  : kind == kRing    ? grow(m.placed.sets.at(id), 36)
+						  : f.pins.count(id) ? f.pins.at(id)
+								     : m.placed.headers.at(id),
 						  kind == kGlowLine ? std::stoi(id) : -1);
 			if (!exists) {
 				e.opacity = Anim{0, 0, t, 0};
