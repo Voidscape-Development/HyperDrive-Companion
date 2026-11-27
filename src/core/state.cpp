@@ -411,6 +411,35 @@ std::optional<DisplayTarget> DisplayTarget::parse(const std::string &value)
 	return target;
 }
 
+std::vector<DisplayTarget> DisplayTarget::parseList(const std::string &value)
+{
+	std::vector<DisplayTarget> targets;
+	for (size_t start = 0; start <= value.size();) {
+		size_t bar = std::min(value.find('|', start), value.size());
+		if (auto target = parse(value.substr(start, bar - start)))
+			targets.push_back(*target);
+		start = bar + 1;
+	}
+	return targets;
+}
+
+std::string currentGame(const json &state)
+{
+	return text(get(state, "game.codename"));
+}
+
+std::vector<std::pair<std::string, std::string>> parseGames(const json &games)
+{
+	std::vector<std::pair<std::string, std::string>> list;
+	if (games.is_object())
+		for (auto it = games.begin(); it != games.end(); ++it) {
+			std::string name = text(get(it.value(), "name"));
+			list.emplace_back(it.key(), name.empty() ? it.key() : name);
+		}
+	std::sort(list.begin(), list.end(), [](const auto &a, const auto &b) { return a.second < b.second; });
+	return list;
+}
+
 std::string DisplayTarget::toString() const
 {
 	switch (kind) {

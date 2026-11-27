@@ -89,12 +89,17 @@ nlohmann::json triggerSnapshot(const nlohmann::json &state)
 	}
 	if (const nlohmann::json *focus = get(state, "bracket.focus"))
 		snapshot["bracket"]["focus"] = *focus;
+	if (std::string game = currentGame(state); !game.empty())
+		snapshot["game"]["codename"] = game;
 	return snapshot;
 }
 
 std::vector<TriggerEvent> detectTriggers(const nlohmann::json &before, const nlohmann::json &after)
 {
 	std::vector<TriggerEvent> events;
+	std::string game = currentGame(after);
+	if (!game.empty() && game != currentGame(before))
+		events.push_back({TriggerKind::GameChanged, 0, game});
 	const nlohmann::json *beforeScores = get(before, "score");
 	if (!beforeScores || !beforeScores->is_object())
 		return events;
@@ -192,6 +197,10 @@ bool conditionHolds(const Condition &c, const ConditionContext &context)
 	case ConditionKind::InstanceConnected:
 		return std::find(context.connected.begin(), context.connected.end(), c.value) !=
 		       context.connected.end();
+	case ConditionKind::GameIs:
+		return context.state && currentGame(*context.state) == c.value;
+	case ConditionKind::GameIsNot:
+		return context.state && currentGame(*context.state) != c.value;
 	case ConditionKind::Count:
 		break;
 	}

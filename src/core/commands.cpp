@@ -244,6 +244,11 @@ Request layouts()
 	return {"/layouts"};
 }
 
+Request games()
+{
+	return {"/games"};
+}
+
 const std::vector<NamedCommand> &namedCommands()
 {
 	using SC = stageStrike::Command;

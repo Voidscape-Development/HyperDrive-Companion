@@ -366,10 +366,9 @@ void Companion::handleState(HyperDrive &drive)
 	drive.client->withState([&snapshot](const nlohmann::json &state) { snapshot = hd::triggerSnapshot(state); });
 	nlohmann::json before = std::move(drive.snapshot);
 	drive.snapshot = std::move(snapshot);
-	if (!before.is_null()) {
-		for (const hd::TriggerEvent &event : hd::detectTriggers(before, drive.snapshot))
-			dispatch(event, drive.config.id);
-	}
+	// The first state after connecting only says which game is picked
+	for (const hd::TriggerEvent &event : hd::detectTriggers(before, drive.snapshot))
+		dispatch(event, drive.config.id);
 	emit stateChanged(q(drive.config.id));
 }
 
@@ -466,9 +465,9 @@ void Companion::runAction(const hd::Action &a, const std::string &instance, int 
 		break;
 	case K::ShowLayouts:
 	case K::HideLayouts:
-		if (auto target = hd::DisplayTarget::parse(a.target))
-			command(hd::display::set(*target, a.kind == K::ShowLayouts ? hd::display::Action::Show
-										   : hd::display::Action::Hide),
+		for (const hd::DisplayTarget &target : hd::DisplayTarget::parseList(a.target))
+			command(hd::display::set(target, a.kind == K::ShowLayouts ? hd::display::Action::Show
+										  : hd::display::Action::Hide),
 				instance);
 		break;
 	case K::ShowSource:

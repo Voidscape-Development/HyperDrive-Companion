@@ -42,7 +42,7 @@ struct TriggerEvent {
 	TriggerKind kind;
 	/** 0 when not on a scoreboard */
 	int scoreboard = 0;
-	/** SceneLive: scene; Hotkey: number; Timer: minutes since start; BracketFocusChanged: channel */
+	/** SceneLive: scene; Hotkey: number; Timer: minutes since start; BracketFocusChanged: channel; GameChanged: game codename */
 	std::string param;
 
 	bool operator==(const TriggerEvent &other) const
@@ -56,7 +56,8 @@ nlohmann::json triggerSnapshot(const nlohmann::json &state);
 
 /**
  * The events between two states (or snapshots). Nothing when there was no
- * state before (the plugin just connected).
+ * state before (the plugin just connected), but GameChanged for the game
+ * already picked.
  */
 std::vector<TriggerEvent> detectTriggers(const nlohmann::json &before, const nlohmann::json &after);
 

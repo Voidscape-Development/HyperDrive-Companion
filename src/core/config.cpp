@@ -55,6 +55,7 @@ const char *const kTriggers[] = {"set_finished",
 				 "queue_changed",
 				 "battle_player_out",
 				 "bracket_focus_changed",
+				 "game_changed",
 				 "connected",
 				 "disconnected",
 				 "scene_live",
@@ -64,8 +65,9 @@ const char *const kTriggers[] = {"set_finished",
 				 "streaming_stopped",
 				 "hotkey",
 				 "timer"};
-const char *const kConditions[] = {"scene_is",  "scene_is_not", "best_of",       "round_contains",    "team_has_games",
-				   "recording", "streaming",    "replay_buffer", "instance_connected"};
+const char *const kConditions[] = {"scene_is",           "scene_is_not", "best_of",    "round_contains",
+				   "team_has_games",     "recording",    "streaming",  "replay_buffer",
+				   "instance_connected", "game_is",      "game_is_not"};
 const char *const kActions[] = {"switch_scene",    "show_layouts",   "hide_layouts", "show_source",
 				"hide_source",     "toggle_filter",  "command",      "wait",
 				"start_recording", "stop_recording", "save_replay"};

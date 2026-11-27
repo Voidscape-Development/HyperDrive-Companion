@@ -134,6 +134,15 @@ TEST(state_display)
 	CHECK(DisplayTarget::parse("all").has_value());
 	CHECK(!DisplayTarget::parse("bogus:x").has_value());
 	CHECK(!DisplayTarget::parse("group:").has_value());
+	auto targets = DisplayTarget::parseList("folder:top_8|group:main||bogus");
+	CHECK(targets.size() == 2 && targets[1].kind == DisplayTarget::Kind::Group && targets[1].name == "main");
+	CHECK_EQ(DisplayTarget::parseList("all").size(), size_t(1));
+
+	auto games = parseGames(
+		json::parse(R"({"sf6": {"name": "Street Fighter 6"}, "ssbu": {"name": "Smash Ultimate"}, "x": {}})"));
+	CHECK(games.size() == 3 && games[0].first == "ssbu" && games[2].first == "x");
+	CHECK_EQ(currentGame(json{{"game", {{"codename", "sf6"}}}}), "sf6");
+	CHECK(currentGame(json::object()).empty());
 }
 
 TEST(state_strike_and_bracket)

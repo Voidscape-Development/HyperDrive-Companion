@@ -73,6 +73,7 @@ enum class TriggerKind {
 	QueueChanged,
 	BattlePlayerOut,
 	BracketFocusChanged,
+	GameChanged,
 	Connected,
 	Disconnected,
 	SceneLive,
@@ -94,6 +95,8 @@ enum class ConditionKind {
 	Streaming,
 	ReplayBuffer,
 	InstanceConnected,
+	GameIs,
+	GameIsNot,
 	Count
 };
 enum class ActionKind {
@@ -126,13 +129,13 @@ bool triggerHasScoreboard(TriggerKind kind);
 
 struct Condition {
 	ConditionKind kind = ConditionKind::SceneIs;
-	/** Scene, number, text or instance id; nothing for the OBS ones */
+	/** Scene, number, text, instance id or game codename; nothing for the OBS ones */
 	std::string value;
 };
 
 /**
  * What target and value mean, by kind: SwitchScene (scene), Show/HideLayouts
- * ("all", "folder:x", "group:x"), Show/HideSource (source, scene or "" for
+ * ("all", "folder:x", "group:x", several joined by '|'), Show/HideSource (source, scene or "" for
  * the one live), ToggleFilter (source, filter), Command (a NamedCommand id,
  * scoreboard or "" for the event's), Wait (-, milliseconds).
  */
@@ -152,7 +155,7 @@ struct Rule {
 	std::string instance;
 	/** 0 for any */
 	int scoreboard = 0;
-	/** SceneLive: scene; Hotkey: 1-10; Timer: minutes; BracketFocusChanged: channel. "" for any */
+	/** SceneLive: scene; Hotkey: 1-10; Timer: minutes; BracketFocusChanged: channel; GameChanged: game codename. "" for any */
 	std::string param;
 	std::vector<Condition> conditions;
 	std::vector<Action> actions;
