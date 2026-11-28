@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -107,6 +108,9 @@ float4 PSDraw(VertInOut vert_in) : TARGET { return image.Sample(textureSampler, 
 technique Draw { pass { vertex_shader = VSDefault(vert_in); pixel_shader = PSDraw(vert_in); } }
 )";
 
+/** What's uploaded to the GPU in a frame, at most (one picture at least) */
+constexpr size_t kUploadBytes = 8 << 20;
+
 double now()
 {
 	return os_gettime_ns() / 1e9;
@@ -184,6 +188,8 @@ struct Texture {
 	size_t content = 0;
 	bool incomplete = false;
 	uint64_t assets = 0;
+	/** When it was uploaded */
+	double painted = 0;
 	void release()
 	{
 		gs_texture_destroy(tex);
@@ -251,7 +257,10 @@ public:
 		obs_leave_graphics();
 		std::lock_guard<std::mutex> lock(sourcesMutex);
 		sources.insert(this);
-		thread_ = std::thread([this]() { run(); });
+		// Painting is most of the work: on a few threads (the first also makes the model)
+		unsigned n = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 4u);
+		for (unsigned i = 0; i < n; i++)
+			threads_.emplace_back([this, i]() { run(i == 0); });
 	}
 
 	~Source()
@@ -278,8 +287,9 @@ public:
 			stopping_ = true;
 		}
 		wake_.notify_all();
-		if (thread_.joinable())
-			thread_.join();
+		for (std::thread &thread : threads_)
+			thread.join();
+		threads_.clear();
 	}
 
 	void update(obs_data_t *settings)
@@ -313,28 +323,30 @@ public:
 	uint32_t height() const { return height_; }
 
 	// -----------------------------------------------------------------
-	// The source's thread: the model from the state, and the pictures
+	// The source's threads: the model from the state (the first), and the pictures
 
-	void run()
+	void run(bool builds)
 	{
 		uint64_t seenState = 0;
 		while (true) {
-			std::optional<Job> job;
-			bool dirty;
+			std::list<Job>::iterator job;
+			bool painting = false, dirty = false;
 			Options options;
 			{
 				std::unique_lock<std::mutex> lock(mutex_);
 				wake_.wait_for(lock, std::chrono::milliseconds(50),
-					       [this]() { return stopping_ || dirty_ || !jobs_.empty(); });
+					       [&]() { return stopping_ || (builds && dirty_) || !jobs_.empty(); });
 				if (stopping_)
 					return;
 				if (!jobs_.empty()) {
-					job = jobs_.front();
+					job = busy_.insert(busy_.end(), std::move(jobs_.front()));
 					jobs_.pop_front();
-					busy_ = *job;
+					painting = true;
 				}
-				dirty = dirty_;
-				dirty_ = false;
+				if (builds) {
+					dirty = dirty_;
+					dirty_ = false;
+				}
 				options = options_;
 			}
 			Companion *companion = Companion::instance();
@@ -342,15 +354,15 @@ public:
 			if (companion)
 				setAssetBase(hd::baseUrl(hd::connectAddress(
 					companion->hyperdrive(options.instance)->client->address())));
-			if (companion && (dirty || state != seenState)) {
+			if (builds && companion && (dirty || state != seenState)) {
 				seenState = state;
 				build(*companion, options);
 			}
-			if (job) {
+			if (painting) {
 				Result result{job->key, job->content, job->scale, job->assets, paintJob(*job)};
 				std::lock_guard<std::mutex> lock(mutex_);
 				results_.push_back(std::move(result));
-				busy_ = {};
+				busy_.erase(job);
 			}
 		}
 	}
@@ -875,7 +887,9 @@ public:
 					priority = 500 + last * 10 - first;
 				}
 			}
-			bool stale = e.tex.content != e.content || (e.tex.incomplete && e.tex.assets != assets);
+			// Painted while images were loading: again when they're in, at most twice a second
+			bool stale = e.tex.content != e.content ||
+				     (e.tex.incomplete && e.tex.assets != assets && t - e.tex.painted >= 0.5);
 			// Off screen, a small one: there at once when the camera gets there
 			if (scale == 0 && !e.gone && (!e.tex.tex || (!visible && e.tex.scale > base * 2.5) || stale))
 				scale = base;
@@ -889,13 +903,16 @@ public:
 		std::stable_sort(wants.begin(), wants.end(),
 				 [](const auto &a, const auto &b) { return a.first > b.first; });
 		std::lock_guard<std::mutex> lock(mutex_);
-		// Not the one being painted, or painted and not taken yet
+		// Not one being painted, or painted and not taken yet
 		auto done = [this](const Job &job) {
 			auto same = [&job](const std::string &key, double scale, size_t content, uint64_t version) {
 				return key == job.key && scale == job.scale && content == job.content &&
 				       version == job.assets;
 			};
-			return same(busy_.key, busy_.scale, busy_.content, busy_.assets) ||
+			return std::any_of(busy_.begin(), busy_.end(),
+					   [&same](const Job &b) {
+						   return same(b.key, b.scale, b.content, b.assets);
+					   }) ||
 			       std::any_of(results_.begin(), results_.end(), [&same](const Result &r) {
 				       return same(r.key, r.scale, r.content, r.assets);
 			       });
@@ -913,10 +930,16 @@ public:
 
 	void upload(double t)
 	{
+		// A few MB a frame: a burst of pictures doesn't hold a frame up
 		std::vector<Result> results;
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
-			results.swap(results_);
+			size_t n = 0, bytes = 0;
+			while (n < results_.size() && (n == 0 || bytes < kUploadBytes))
+				bytes += static_cast<size_t>(results_[n++].sprite.image.sizeInBytes());
+			results.assign(std::make_move_iterator(results_.begin()),
+				       std::make_move_iterator(results_.begin() + static_cast<long>(n)));
+			results_.erase(results_.begin(), results_.begin() + static_cast<long>(n));
 		}
 		for (Result &r : results) {
 			auto it = elements_.find(r.key);
@@ -941,7 +964,7 @@ public:
 			} else {
 				e.tex.release();
 			}
-			e.tex = {tex, r.sprite.at, r.scale, r.content, r.sprite.incomplete, r.assets};
+			e.tex = {tex, r.sprite.at, r.scale, r.content, r.sprite.incomplete, r.assets, t};
 		}
 	}
 
@@ -1073,7 +1096,7 @@ public:
 private:
 	obs_source_t *self_;
 	std::atomic<uint32_t> width_{1920}, height_{1080};
-	std::thread thread_;
+	std::vector<std::thread> threads_;
 
 	// Shared with the source's thread
 	std::mutex mutex_;
@@ -1082,8 +1105,8 @@ private:
 	bool dirty_ = true;
 	Options options_;
 	std::deque<Job> jobs_;
-	/** The job being painted */
-	Job busy_{};
+	/** The jobs being painted */
+	std::list<Job> busy_;
 	std::vector<Result> results_;
 	std::shared_ptr<const Model> pending_;
 
