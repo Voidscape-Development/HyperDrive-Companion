@@ -137,6 +137,18 @@ TEST(triggers_match_point_queue_battle_focus)
 	after["bracket"]["focus"]["main"]["mode"] = "round";
 	events = detectTriggers(triggerSnapshot(before), triggerSnapshot(after));
 	CHECK(events.size() == 1 && events[0] == (TriggerEvent{TriggerKind::BracketFocusChanged, 0, "main"}));
+
+	// The game: when it changes, and the one already picked on connect
+	before["game"] = {{"codename", "ssbu"}, {"name", "Ultimate"}};
+	after = before;
+	after["game"]["codename"] = "sf6";
+	events = detectTriggers(triggerSnapshot(before), triggerSnapshot(after));
+	CHECK(events.size() == 1 && events[0] == (TriggerEvent{TriggerKind::GameChanged, 0, "sf6"}));
+	CHECK(!has(detectTriggers(before, before), TriggerKind::GameChanged));
+	events = detectTriggers(json(), triggerSnapshot(after));
+	CHECK(events.size() == 1 && events[0] == (TriggerEvent{TriggerKind::GameChanged, 0, "sf6"}));
+	after["game"] = json::object();
+	CHECK(detectTriggers(before, after).empty());
 }
 
 TEST(triggers_rule_matches)
@@ -164,6 +176,13 @@ TEST(triggers_rule_matches)
 	timer.param = "5";
 	CHECK(ruleMatches(timer, {TriggerKind::Timer, 0, "10"}, ""));
 	CHECK(!ruleMatches(timer, {TriggerKind::Timer, 0, "11"}, ""));
+
+	Rule game;
+	game.trigger = TriggerKind::GameChanged;
+	CHECK(ruleMatches(game, {TriggerKind::GameChanged, 0, "sf6"}, "a"));
+	game.param = "ssbu";
+	CHECK(!ruleMatches(game, {TriggerKind::GameChanged, 0, "sf6"}, "a"));
+	CHECK(ruleMatches(game, {TriggerKind::GameChanged, 0, "ssbu"}, "a"));
 }
 
 TEST(triggers_conditions)
@@ -184,6 +203,10 @@ TEST(triggers_conditions)
 	CHECK(!conditionHolds({ConditionKind::Streaming, ""}, context));
 	CHECK(conditionHolds({ConditionKind::InstanceConnected, "a"}, context));
 	CHECK(!conditionHolds({ConditionKind::InstanceConnected, "b"}, context));
+	state["game"]["codename"] = "ssbu";
+	CHECK(conditionHolds({ConditionKind::GameIs, "ssbu"}, context));
+	CHECK(!conditionHolds({ConditionKind::GameIsNot, "ssbu"}, context));
+	CHECK(conditionHolds({ConditionKind::GameIsNot, "sf6"}, context));
 
 	Rule rule;
 	CHECK(conditionsHold(rule, context));

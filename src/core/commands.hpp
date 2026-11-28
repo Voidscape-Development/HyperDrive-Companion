@@ -109,5 +109,7 @@ std::optional<Request> namedCommand(const std::string &id, int sb);
 
 /** The layout pages (HyperDrive with GET /layouts) */
 Request layouts();
+/** The games HyperDrive has, by codename */
+Request games();
 
 } // namespace hd

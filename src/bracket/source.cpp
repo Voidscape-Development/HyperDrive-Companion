@@ -24,6 +24,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <condition_variable>
 #include <deque>
 #include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -94,6 +95,14 @@ constexpr const char *kEffect = R"(
 uniform float4x4 ViewProj;
 uniform texture2d image;
 uniform float4 color;
+// 0: a picture; 1: a focus ring and its glow; 2: a card's shadow
+uniform float mode;
+// The rounded box: its center and half size, from the quad's corner, in world pixels
+uniform float4 shape;
+uniform float2 size;
+uniform float radius;
+// A screen pixel, in world pixels
+uniform float px;
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
 struct VertInOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 VertInOut VSDefault(VertInOut vert_in)
@@ -103,9 +112,42 @@ VertInOut VSDefault(VertInOut vert_in)
 	vert_out.uv = vert_in.uv;
 	return vert_out;
 }
-float4 PSDraw(VertInOut vert_in) : TARGET { return image.Sample(textureSampler, vert_in.uv) * color; }
+float distanceOut(float2 p)
+{
+	float2 q = abs(p) - shape.zw + radius;
+	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+}
+float erfcApprox(float x)
+{
+	float x2 = x * x;
+	return 1.0 - sqrt(1.0 - exp(-x2 * (1.2732395 + 0.147 * x2) / (1.0 + 0.147 * x2)));
+}
+// A layer of index.css's --bf-shadow: the box moved down dy, blurred over blur
+float shadowLayer(float2 p, float dy, float blur, float alpha)
+{
+	float b = max(blur, px);
+	return 1.0 - alpha * saturate((b * 0.5 - distanceOut(p - float2(0.0, dy))) / b);
+}
+float4 PSDraw(VertInOut vert_in) : TARGET
+{
+	if (mode < 0.5)
+		return image.Sample(textureSampler, vert_in.uv) * color;
+	float2 p = vert_in.uv * size - shape.xy;
+	if (mode > 1.5)
+		return color * (1.0 - shadowLayer(p, 2.0, 2.0, 0.12) * shadowLayer(p, 3.0, 1.0, 0.14) *
+					      shadowLayer(p, 1.0, 5.0, 0.12));
+	// box-shadow: 0 0 0 4px, and 0 0 28px 4px: a ring, and a glow around it
+	// fading out over 28px (a blur of 14px's deviation)
+	float d = distanceOut(p);
+	float ring = saturate(d / px + 0.5) * saturate((4.0 - d) / px + 0.5);
+	float glow = d > 3.0 ? 0.5 * erfcApprox((d - 3.0) / 19.79899) : 0.0;
+	return color * (ring + glow * (1.0 - ring));
+}
 technique Draw { pass { vertex_shader = VSDefault(vert_in); pixel_shader = PSDraw(vert_in); } }
 )";
+
+/** What's uploaded to the GPU in a frame, at most (one picture at least) */
+constexpr size_t kUploadBytes = 8 << 20;
 
 double now()
 {
@@ -184,6 +226,8 @@ struct Texture {
 	size_t content = 0;
 	bool incomplete = false;
 	uint64_t assets = 0;
+	/** When it was uploaded */
+	double painted = 0;
 	void release()
 	{
 		gs_texture_destroy(tex);
@@ -246,12 +290,21 @@ public:
 			obs_log(LOG_ERROR, "Bracket focus effect: %s", error ? error : "?");
 		imageParam_ = effect_ ? gs_effect_get_param_by_name(effect_, "image") : nullptr;
 		colorParam_ = effect_ ? gs_effect_get_param_by_name(effect_, "color") : nullptr;
+		for (auto [param, name] : {std::pair{&modeParam_, "mode"},
+					   {&shapeParam_, "shape"},
+					   {&sizeParam_, "size"},
+					   {&radiusParam_, "radius"},
+					   {&pxParam_, "px"}})
+			*param = effect_ ? gs_effect_get_param_by_name(effect_, name) : nullptr;
 		bfree(error);
 		world_ = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		obs_leave_graphics();
 		std::lock_guard<std::mutex> lock(sourcesMutex);
 		sources.insert(this);
-		thread_ = std::thread([this]() { run(); });
+		// Painting is most of the work: on a few threads (the first also makes the model)
+		unsigned n = std::clamp(std::thread::hardware_concurrency() / 2, 1u, 4u);
+		for (unsigned i = 0; i < n; i++)
+			threads_.emplace_back([this, i]() { run(i == 0); });
 	}
 
 	~Source()
@@ -278,8 +331,9 @@ public:
 			stopping_ = true;
 		}
 		wake_.notify_all();
-		if (thread_.joinable())
-			thread_.join();
+		for (std::thread &thread : threads_)
+			thread.join();
+		threads_.clear();
 	}
 
 	void update(obs_data_t *settings)
@@ -313,28 +367,30 @@ public:
 	uint32_t height() const { return height_; }
 
 	// -----------------------------------------------------------------
-	// The source's thread: the model from the state, and the pictures
+	// The source's threads: the model from the state (the first), and the pictures
 
-	void run()
+	void run(bool builds)
 	{
 		uint64_t seenState = 0;
 		while (true) {
-			std::optional<Job> job;
-			bool dirty;
+			std::list<Job>::iterator job;
+			bool painting = false, dirty = false;
 			Options options;
 			{
 				std::unique_lock<std::mutex> lock(mutex_);
 				wake_.wait_for(lock, std::chrono::milliseconds(50),
-					       [this]() { return stopping_ || dirty_ || !jobs_.empty(); });
+					       [&]() { return stopping_ || (builds && dirty_) || !jobs_.empty(); });
 				if (stopping_)
 					return;
 				if (!jobs_.empty()) {
-					job = jobs_.front();
+					job = busy_.insert(busy_.end(), std::move(jobs_.front()));
 					jobs_.pop_front();
-					busy_ = *job;
+					painting = true;
 				}
-				dirty = dirty_;
-				dirty_ = false;
+				if (builds) {
+					dirty = dirty_;
+					dirty_ = false;
+				}
 				options = options_;
 			}
 			Companion *companion = Companion::instance();
@@ -342,15 +398,15 @@ public:
 			if (companion)
 				setAssetBase(hd::baseUrl(hd::connectAddress(
 					companion->hyperdrive(options.instance)->client->address())));
-			if (companion && (dirty || state != seenState)) {
+			if (builds && companion && (dirty || state != seenState)) {
 				seenState = state;
 				build(*companion, options);
 			}
-			if (job) {
+			if (painting) {
 				Result result{job->key, job->content, job->scale, job->assets, paintJob(*job)};
 				std::lock_guard<std::mutex> lock(mutex_);
 				results_.push_back(std::move(result));
-				busy_ = {};
+				busy_.erase(job);
 			}
 		}
 	}
@@ -487,7 +543,6 @@ public:
 						what += "focus" + std::to_string(focus.color);
 				}
 			model->content[keyOf(kSet, id)] = hashOf(what);
-			model->content[keyOf(kRing, id)] = themeHash ^ focus.color;
 		}
 		const json &sides = model->scene.bracket.contains("sides") ? model->scene.bracket["sides"] : json();
 		for (const auto &[key, box] : model->placed.headers) {
@@ -542,9 +597,9 @@ public:
 		case kGlowLine:
 			return paintLine(m.placed.lines[job.line], theme, job.scale, m.focus.color);
 		case kRing:
-			return paintRing(m.placed.sets.at(job.id), theme, m.focus.color, job.scale, false);
+			break;
 		case kBar:
-			return paintRing(job.box, theme, m.focus.color, job.scale, true);
+			return paintBar(job.box, theme, m.focus.color, job.scale);
 		case kTitle:
 			return paintTitle(m.title, theme, m.width / m.titleScale, job.scale, m.titleStyle);
 		case kLabel:
@@ -578,7 +633,7 @@ public:
 		// The sets come in once they're painted (or after a second)
 		if (introPending_ &&
 		    (t - builtAt_ > 1 || std::all_of(elements_.begin(), elements_.end(), [](const auto &e) {
-			     return e.second.tex.tex || e.second.kind >= kTitle;
+			     return e.second.tex.tex || e.second.kind >= kTitle || e.second.kind == kRing;
 		     })))
 			startIntro(t);
 		request(t);
@@ -840,6 +895,11 @@ public:
 				orderDirty_ = true;
 				continue;
 			}
+			// Drawn by the shader
+			if (e.kind == kRing) {
+				++it;
+				continue;
+			}
 			bool page = e.kind == kTitle || e.kind == kLabel;
 			bool visible = page || overlaps(e.box, shown);
 			double scale = 0, priority = 0;
@@ -875,7 +935,9 @@ public:
 					priority = 500 + last * 10 - first;
 				}
 			}
-			bool stale = e.tex.content != e.content || (e.tex.incomplete && e.tex.assets != assets);
+			// Painted while images were loading: again when they're in, at most twice a second
+			bool stale = e.tex.content != e.content ||
+				     (e.tex.incomplete && e.tex.assets != assets && t - e.tex.painted >= 0.5);
 			// Off screen, a small one: there at once when the camera gets there
 			if (scale == 0 && !e.gone && (!e.tex.tex || (!visible && e.tex.scale > base * 2.5) || stale))
 				scale = base;
@@ -889,13 +951,16 @@ public:
 		std::stable_sort(wants.begin(), wants.end(),
 				 [](const auto &a, const auto &b) { return a.first > b.first; });
 		std::lock_guard<std::mutex> lock(mutex_);
-		// Not the one being painted, or painted and not taken yet
+		// Not one being painted, or painted and not taken yet
 		auto done = [this](const Job &job) {
 			auto same = [&job](const std::string &key, double scale, size_t content, uint64_t version) {
 				return key == job.key && scale == job.scale && content == job.content &&
 				       version == job.assets;
 			};
-			return same(busy_.key, busy_.scale, busy_.content, busy_.assets) ||
+			return std::any_of(busy_.begin(), busy_.end(),
+					   [&same](const Job &b) {
+						   return same(b.key, b.scale, b.content, b.assets);
+					   }) ||
 			       std::any_of(results_.begin(), results_.end(), [&same](const Result &r) {
 				       return same(r.key, r.scale, r.content, r.assets);
 			       });
@@ -913,10 +978,16 @@ public:
 
 	void upload(double t)
 	{
+		// A few MB a frame: a burst of pictures doesn't hold a frame up
 		std::vector<Result> results;
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
-			results.swap(results_);
+			size_t n = 0, bytes = 0;
+			while (n < results_.size() && (n == 0 || bytes < kUploadBytes))
+				bytes += static_cast<size_t>(results_[n++].sprite.image.sizeInBytes());
+			results.assign(std::make_move_iterator(results_.begin()),
+				       std::make_move_iterator(results_.begin() + static_cast<long>(n)));
+			results_.erase(results_.begin(), results_.begin() + static_cast<long>(n));
 		}
 		for (Result &r : results) {
 			auto it = elements_.find(r.key);
@@ -941,7 +1012,7 @@ public:
 			} else {
 				e.tex.release();
 			}
-			e.tex = {tex, r.sprite.at, r.scale, r.content, r.sprite.incomplete, r.assets};
+			e.tex = {tex, r.sprite.at, r.scale, r.content, r.sprite.incomplete, r.assets, t};
 		}
 	}
 
@@ -970,6 +1041,7 @@ public:
 		struct vec4 color;
 		vec4_set(&color, static_cast<float>(alpha), static_cast<float>(alpha), static_cast<float>(alpha),
 			 static_cast<float>(alpha));
+		gs_effect_set_float(modeParam_, 0);
 		gs_effect_set_texture(imageParam_, tex.tex);
 		gs_effect_set_vec4(colorParam_, &color);
 		gs_matrix_push();
@@ -978,6 +1050,35 @@ public:
 		gs_matrix_scale3f(static_cast<float>(tex.at.w * scale / gs_texture_get_width(tex.tex)),
 				  static_cast<float>(tex.at.h * scale / gs_texture_get_height(tex.tex)), 1);
 		gs_draw_sprite(tex.tex, 0, 0, 0);
+		gs_matrix_pop();
+	}
+
+	/** A focus ring (mode 1) or a card's shadow (2) around a box, on the quad around it */
+	void drawShape(float mode, const Box &box, const Box &quad, double x, double y, double scale, uint32_t argb,
+		       double alpha)
+	{
+		if (alpha <= 0.002)
+			return;
+		float a = static_cast<float>(alpha * (argb >> 24) / 255);
+		struct vec4 color, shape;
+		struct vec2 size;
+		vec4_set(&color, a * ((argb >> 16) & 0xff) / 255, a * ((argb >> 8) & 0xff) / 255,
+			 a * (argb & 0xff) / 255, a);
+		vec4_set(&shape, static_cast<float>(box.x - quad.x + box.w / 2),
+			 static_cast<float>(box.y - quad.y + box.h / 2), static_cast<float>(box.w / 2),
+			 static_cast<float>(box.h / 2));
+		vec2_set(&size, static_cast<float>(quad.w), static_cast<float>(quad.h));
+		gs_effect_set_float(modeParam_, mode);
+		gs_effect_set_vec4(colorParam_, &color);
+		gs_effect_set_vec4(shapeParam_, &shape);
+		gs_effect_set_vec2(sizeParam_, &size);
+		gs_effect_set_float(radiusParam_, static_cast<float>(model_->scene.theme.radius / 2));
+		gs_effect_set_float(pxParam_, static_cast<float>(1 / scale));
+		gs_matrix_push();
+		gs_matrix_translate3f(static_cast<float>(x + quad.x * scale), static_cast<float>(y + quad.y * scale),
+				      0);
+		gs_matrix_scale3f(static_cast<float>(quad.w * scale), static_cast<float>(quad.h * scale), 1);
+		gs_draw_sprite(nullptr, 0, 1, 1);
 		gs_matrix_pop();
 	}
 
@@ -1031,7 +1132,18 @@ public:
 					if (e->kind == kSet)
 						dx = -40 * (1 - eased);
 				}
-				drawElement(*e, v.left() + dx * v.scale, v.top(), v.scale, alpha, t);
+				double x = v.left() + dx * v.scale;
+				if (e->kind == kRing) {
+					drawShape(1, m.placed.sets.at(e->id), e->box, x, v.top(), v.scale,
+						  m.focus.color, alpha);
+					continue;
+				}
+				// The cards' shadows, under them once they're painted
+				bool card = e->kind == kSet ||
+					    ((e->kind == kRound || e->kind == kPin) && m.scene.theme.roundNames);
+				if (card && e->tex.tex)
+					drawShape(2, e->box, grow(e->box, 8), x, v.top(), v.scale, 0xff000000, alpha);
+				drawElement(*e, x, v.top(), v.scale, alpha, t);
 			}
 			gs_technique_end_pass(tech);
 			gs_technique_end(tech);
@@ -1073,7 +1185,7 @@ public:
 private:
 	obs_source_t *self_;
 	std::atomic<uint32_t> width_{1920}, height_{1080};
-	std::thread thread_;
+	std::vector<std::thread> threads_;
 
 	// Shared with the source's thread
 	std::mutex mutex_;
@@ -1082,8 +1194,8 @@ private:
 	bool dirty_ = true;
 	Options options_;
 	std::deque<Job> jobs_;
-	/** The job being painted */
-	Job busy_{};
+	/** The jobs being painted */
+	std::list<Job> busy_;
 	std::vector<Result> results_;
 	std::shared_ptr<const Model> pending_;
 
@@ -1102,7 +1214,8 @@ private:
 	bool introPending_ = false;
 	double builtAt_ = 0;
 	gs_effect_t *effect_ = nullptr;
-	gs_eparam_t *imageParam_ = nullptr, *colorParam_ = nullptr;
+	gs_eparam_t *imageParam_ = nullptr, *colorParam_ = nullptr, *modeParam_ = nullptr, *shapeParam_ = nullptr,
+		    *sizeParam_ = nullptr, *radiusParam_ = nullptr, *pxParam_ = nullptr;
 	double frame_ = 0;
 	bool worldDrawn_ = false;
 	gs_texrender_t *world_ = nullptr;

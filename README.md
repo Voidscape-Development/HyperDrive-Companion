@@ -14,7 +14,7 @@ scenes to what happens in HyperDrive:
 - **A HyperDrive Bracket Focus source**: HyperDrive's zooming bracket (`bracket_focus`), drawn by
   OBS itself instead of a browser, so its camera moves stay smooth on any bracket.
 - **Automation**: rules of *when* something happens (a set is won, match point, the stage is
-  picked, a scene goes live, the stream starts, a hotkey…), *only if* some conditions hold, *then*
+  picked, the game changes, a scene goes live, the stream starts, a hotkey…), *only if* some conditions hold, *then*
   actions in order: switch scenes, show or hide layouts with their animations, show or hide
   sources, run any HyperDrive command, record, save the replay buffer, wait. In groups you turn on
   and off together.
@@ -139,6 +139,7 @@ In **Tools › HyperDrive Companion › Automation**, each rule is:
 | The stream queue's next set changes | The set the scoreboard's stream queue loads next |
 | A crew player is out | A player of the crew battle loses their last stock |
 | The bracket focus changes | On a channel, or any |
+| The game changes | To a given game of HyperDrive's, or any. Also when the instance connects with a game already picked |
 | HyperDrive connects / can't be reached | The instance comes back, or goes away |
 | A scene goes live | A given scene, or any |
 | Recording / the stream starts or stops | OBS's |
@@ -151,11 +152,12 @@ In **Tools › HyperDrive Companion › Automation**, each rule is:
 | The set is a best of, the round's name has, a team has won (games) | On the event's scoreboard |
 | OBS is recording / streaming, the replay buffer is on | |
 | This HyperDrive is connected | An instance |
+| The game is / isn't | A game of HyperDrive's |
 
 | Then | |
 | - | - |
 | Switch scene | In Studio Mode, through the preview and the transition |
-| Show / hide layouts | `all`, `folder:<layout folder>` or `group:<group>`, with their animations, as with HyperDrive's Display Controls |
+| Show / hide layouts | `all`, `folder:<layout folder>` or `group:<group>`, one or several (**+**), with their animations, as with HyperDrive's Display Controls |
 | Show / hide a source | In a scene, or the one live |
 | Turn a filter on/off | A source's filter |
 | HyperDrive command | Anything the hotkeys do (scores, swap, resets, load the next set, stage strike, crew battle, Display Controls, bracket focus), on the event's scoreboard or a given one |

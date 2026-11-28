@@ -545,10 +545,9 @@ void drawPlayer(QPainter &p, const Scene &scene, const json &set, int n, const Q
 		});
 }
 
-/** A rounded box with the bracket's shadow, filled with the background */
+/** A rounded box filled with the background (the source draws its shadow) */
 void card(QPainter &p, const Theme &t, const QRectF &r)
 {
-	shadow(p, r, t.radius / 2);
 	p.setPen(Qt::NoPen);
 	p.setBrush(qcolor(t.background));
 	p.drawRoundedRect(r, t.radius / 2, t.radius / 2);
@@ -910,36 +909,17 @@ Sprite paintLine(const Line &line, const Theme &theme, double scale, uint32_t ou
 	});
 }
 
-Sprite paintRing(const Box &box, const Theme &theme, uint32_t color, double scale, bool bar)
+Sprite paintBar(const Box &box, const Theme &theme, uint32_t color, double scale)
 {
 	double radius = theme.radius / 2;
-	return paint(grow(box, bar ? 2 : 36), scale, [&](QPainter &p) {
-		QRectF r = rectOf(box);
-		if (bar) {
-			if (!theme.roundNames)
-				return;
-			QPainterPath clip;
-			clip.addRoundedRect(r, radius, radius);
-			p.setClipPath(clip);
-			p.fillRect(QRectF(r.x(), r.bottom() - 4, r.width(), 4), qcolor(color));
+	return paint(grow(box, 2), scale, [&](QPainter &p) {
+		if (!theme.roundNames)
 			return;
-		}
-		// box-shadow: 0 0 0 4px, and 0 0 28px 4px: a ring, and a glow
-		// around it fading out over 28px (a blur of 14px's deviation)
-		QPainterPath inside;
-		inside.addRoundedRect(r, radius, radius);
-		p.setBrush(Qt::NoBrush);
-		for (double d = 26; d >= 0; d -= 2) {
-			QColor c = qcolor(color);
-			c.setAlphaF(c.alphaF() * 0.5 * std::erfc((d + 1) / (14 * std::sqrt(2.0))));
-			p.setPen(QPen(c, 2));
-			// The innermost one under the ring, so there's no seam
-			double by = 4 + d;
-			p.drawRoundedRect(r.adjusted(-by, -by, by, by), radius + by, radius + by);
-		}
-		QPainterPath ring;
-		ring.addRoundedRect(r.adjusted(-4, -4, 4, 4), radius + 4, radius + 4);
-		p.fillPath(ring.subtracted(inside), qcolor(color));
+		QRectF r = rectOf(box);
+		QPainterPath clip;
+		clip.addRoundedRect(r, radius, radius);
+		p.setClipPath(clip);
+		p.fillRect(QRectF(r.x(), r.bottom() - 4, r.width(), 4), qcolor(color));
 	});
 }
 

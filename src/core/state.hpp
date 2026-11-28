@@ -133,8 +133,18 @@ struct DisplayTarget {
 	std::string name;
 
 	static std::optional<DisplayTarget> parse(const std::string &value);
+	/** Several targets joined by '|' (which no folder or group name has), skipping invalid ones */
+	static std::vector<DisplayTarget> parseList(const std::string &value);
 	std::string toString() const;
 };
+
+// Games
+
+/** The game picked in HyperDrive (its codename), or "" */
+std::string currentGame(const json &state);
+
+/** GET /games's answer, as {codename, name} sorted by name */
+std::vector<std::pair<std::string, std::string>> parseGames(const json &games);
 
 // Stage strike
 

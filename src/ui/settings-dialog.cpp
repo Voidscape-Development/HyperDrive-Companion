@@ -157,7 +157,7 @@ QString describe(const hd::Action &a)
 				return what + QStringLiteral(": ") +
 				       T(command.textKey).section(QStringLiteral(": "), -1);
 	}
-	return a.target.empty() ? what : what + QStringLiteral(": ") + q(a.target);
+	return a.target.empty() ? what : what + QStringLiteral(": ") + q(a.target).replace('|', QStringLiteral(", "));
 }
 
 QString ruleText(const hd::Rule &r)
@@ -657,6 +657,11 @@ void SettingsDialog::buildEditor()
 				 choice(named(channels_, T("HyperDrive.Automation.AnyChannel")), r->param, true,
 					setParam));
 		break;
+	case hd::TriggerKind::GameChanged:
+		whenForm->addRow(T("HyperDrive.Automation.Game"),
+				 choice(Items{qMakePair(T("HyperDrive.Automation.AnyGame"), QString())} + games_,
+					r->param, false, setParam));
+		break;
 	default:
 		break;
 	}
@@ -701,6 +706,10 @@ void SettingsDialog::buildEditor()
 		case C::InstanceConnected:
 			row->addWidget(
 				choice(instanceItems(T("HyperDrive.Instance.Default")).mid(1), c.value, false, set), 1);
+			break;
+		case C::GameIs:
+		case C::GameIsNot:
+			row->addWidget(choice(games_, c.value, true, set), 1);
 			break;
 		default:
 			row->addStretch(1);
@@ -760,9 +769,36 @@ void SettingsDialog::buildEditor()
 			row->addWidget(choice(named(scenes_), a.target, true, target), 2);
 			break;
 		case K::ShowLayouts:
-		case K::HideLayouts:
-			row->addWidget(choice(named(displayTargets_), a.target, true, target), 2);
+		case K::HideLayouts: {
+			// One target, or several joined by '|'
+			QVBoxLayout *list = new QVBoxLayout();
+			QStringList parts = q(a.target).split('|');
+			for (int p = 0; p < parts.size(); p++)
+				list->addWidget(choice(named(displayTargets_), parts[p].toStdString(), true,
+						       [this, i, p, edited](const std::string &v) {
+							       QStringList all =
+								       q(rule()->actions[i].target).split('|');
+							       all[p] = q(v);
+							       rule()->actions[i].target = all.join('|').toStdString();
+							       edited();
+						       }));
+			row->addLayout(list, 2);
+			row->addWidget(tool(QStringLiteral("+"), T("HyperDrive.Automation.AddTarget"), page,
+					    [this, i]() {
+						    rule()->actions[i].target += "|all";
+						    later([this]() { buildEditor(); });
+					    }),
+				       0, Qt::AlignTop);
+			if (parts.size() > 1)
+				row->addWidget(tool(QStringLiteral("−"), T("HyperDrive.Automation.RemoveTarget"), page,
+						    [this, i]() {
+							    std::string &t = rule()->actions[i].target;
+							    t.erase(t.rfind('|'));
+							    later([this]() { buildEditor(); });
+						    }),
+					       0, Qt::AlignTop);
 			break;
+		}
 		case K::ShowSource:
 		case K::HideSource:
 			row->addWidget(choice(named(sources_), a.target, true, target), 1);
@@ -939,6 +975,23 @@ void SettingsDialog::load()
 		for (const std::string &channel : hd::bracketChannels(state))
 			channels_ << q(channel);
 	});
+	games_.clear();
+	std::string game, gameName;
+	companion->hyperdrive()->client->withState([&](const nlohmann::json &state) {
+		game = hd::currentGame(state);
+		gameName = hd::text(hd::get(state, "game.name"));
+	});
+	if (companion->hyperdrive()->client->status() == hd::ConnectionStatus::Connected) {
+		hd::CommandResult result = companion->hyperdrive()->client->commandSync(hd::games(), 2);
+		if (result.ok)
+			for (const auto &[codename, name] :
+			     hd::parseGames(nlohmann::json::parse(result.body, nullptr, false)))
+				games_ << qMakePair(q(name), q(codename));
+	}
+	// An older HyperDrive without GET /games: at least the game picked
+	if (!game.empty() &&
+	    std::none_of(games_.begin(), games_.end(), [&](const auto &g) { return g.second == q(game); }))
+		games_ << qMakePair(q(gameName.empty() ? game : gameName), q(game));
 	for (const auto &folder : display.folders)
 		displayTargets_ << QStringLiteral("folder:") + q(folder.first);
 	for (const auto &group : display.groups)

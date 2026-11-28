@@ -104,4 +104,6 @@ private:
 	QStringList sources_;
 	QStringList displayTargets_;
 	QStringList channels_;
+	/** HyperDrive's games: {name, codename} */
+	QList<QPair<QString, QString>> games_;
 };

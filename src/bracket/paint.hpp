@@ -125,8 +125,8 @@ Sprite paintByes(const Scene &scene, const std::string &key, const Box &box, dou
 Sprite paintStandings(const Scene &scene, const Box &box, double scale);
 /** A line (with its shadow), or its outline in a color */
 Sprite paintLine(const Line &line, const Theme &theme, double scale, uint32_t outline = 0);
-/** The outline of a set in focus, or the bar under a round name */
-Sprite paintRing(const Box &box, const Theme &theme, uint32_t color, double scale, bool bar);
+/** The bar under a round name in focus (the source draws the outlines of sets in focus) */
+Sprite paintBar(const Box &box, const Theme &theme, uint32_t color, double scale);
 
 struct TitleStyle {
 	bool logo = true;
