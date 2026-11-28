@@ -95,6 +95,14 @@ constexpr const char *kEffect = R"(
 uniform float4x4 ViewProj;
 uniform texture2d image;
 uniform float4 color;
+// 0: a picture; 1: a focus ring and its glow; 2: a card's shadow
+uniform float mode;
+// The rounded box: its center and half size, from the quad's corner, in world pixels
+uniform float4 shape;
+uniform float2 size;
+uniform float radius;
+// A screen pixel, in world pixels
+uniform float px;
 sampler_state textureSampler { Filter = Linear; AddressU = Clamp; AddressV = Clamp; };
 struct VertInOut { float4 pos : POSITION; float2 uv : TEXCOORD0; };
 VertInOut VSDefault(VertInOut vert_in)
@@ -104,7 +112,37 @@ VertInOut VSDefault(VertInOut vert_in)
 	vert_out.uv = vert_in.uv;
 	return vert_out;
 }
-float4 PSDraw(VertInOut vert_in) : TARGET { return image.Sample(textureSampler, vert_in.uv) * color; }
+float distanceOut(float2 p)
+{
+	float2 q = abs(p) - shape.zw + radius;
+	return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+}
+float erfcApprox(float x)
+{
+	float x2 = x * x;
+	return 1.0 - sqrt(1.0 - exp(-x2 * (1.2732395 + 0.147 * x2) / (1.0 + 0.147 * x2)));
+}
+// A layer of index.css's --bf-shadow: the box moved down dy, blurred over blur
+float shadowLayer(float2 p, float dy, float blur, float alpha)
+{
+	float b = max(blur, px);
+	return 1.0 - alpha * saturate((b * 0.5 - distanceOut(p - float2(0.0, dy))) / b);
+}
+float4 PSDraw(VertInOut vert_in) : TARGET
+{
+	if (mode < 0.5)
+		return image.Sample(textureSampler, vert_in.uv) * color;
+	float2 p = vert_in.uv * size - shape.xy;
+	if (mode > 1.5)
+		return color * (1.0 - shadowLayer(p, 2.0, 2.0, 0.12) * shadowLayer(p, 3.0, 1.0, 0.14) *
+					      shadowLayer(p, 1.0, 5.0, 0.12));
+	// box-shadow: 0 0 0 4px, and 0 0 28px 4px: a ring, and a glow around it
+	// fading out over 28px (a blur of 14px's deviation)
+	float d = distanceOut(p);
+	float ring = saturate(d / px + 0.5) * saturate((4.0 - d) / px + 0.5);
+	float glow = d > 3.0 ? 0.5 * erfcApprox((d - 3.0) / 19.79899) : 0.0;
+	return color * (ring + glow * (1.0 - ring));
+}
 technique Draw { pass { vertex_shader = VSDefault(vert_in); pixel_shader = PSDraw(vert_in); } }
 )";
 
@@ -252,6 +290,12 @@ public:
 			obs_log(LOG_ERROR, "Bracket focus effect: %s", error ? error : "?");
 		imageParam_ = effect_ ? gs_effect_get_param_by_name(effect_, "image") : nullptr;
 		colorParam_ = effect_ ? gs_effect_get_param_by_name(effect_, "color") : nullptr;
+		for (auto [param, name] : {std::pair{&modeParam_, "mode"},
+					   {&shapeParam_, "shape"},
+					   {&sizeParam_, "size"},
+					   {&radiusParam_, "radius"},
+					   {&pxParam_, "px"}})
+			*param = effect_ ? gs_effect_get_param_by_name(effect_, name) : nullptr;
 		bfree(error);
 		world_ = gs_texrender_create(GS_RGBA, GS_ZS_NONE);
 		obs_leave_graphics();
@@ -499,7 +543,6 @@ public:
 						what += "focus" + std::to_string(focus.color);
 				}
 			model->content[keyOf(kSet, id)] = hashOf(what);
-			model->content[keyOf(kRing, id)] = themeHash ^ focus.color;
 		}
 		const json &sides = model->scene.bracket.contains("sides") ? model->scene.bracket["sides"] : json();
 		for (const auto &[key, box] : model->placed.headers) {
@@ -554,9 +597,9 @@ public:
 		case kGlowLine:
 			return paintLine(m.placed.lines[job.line], theme, job.scale, m.focus.color);
 		case kRing:
-			return paintRing(m.placed.sets.at(job.id), theme, m.focus.color, job.scale, false);
+			break;
 		case kBar:
-			return paintRing(job.box, theme, m.focus.color, job.scale, true);
+			return paintBar(job.box, theme, m.focus.color, job.scale);
 		case kTitle:
 			return paintTitle(m.title, theme, m.width / m.titleScale, job.scale, m.titleStyle);
 		case kLabel:
@@ -590,7 +633,7 @@ public:
 		// The sets come in once they're painted (or after a second)
 		if (introPending_ &&
 		    (t - builtAt_ > 1 || std::all_of(elements_.begin(), elements_.end(), [](const auto &e) {
-			     return e.second.tex.tex || e.second.kind >= kTitle;
+			     return e.second.tex.tex || e.second.kind >= kTitle || e.second.kind == kRing;
 		     })))
 			startIntro(t);
 		request(t);
@@ -852,6 +895,11 @@ public:
 				orderDirty_ = true;
 				continue;
 			}
+			// Drawn by the shader
+			if (e.kind == kRing) {
+				++it;
+				continue;
+			}
 			bool page = e.kind == kTitle || e.kind == kLabel;
 			bool visible = page || overlaps(e.box, shown);
 			double scale = 0, priority = 0;
@@ -993,6 +1041,7 @@ public:
 		struct vec4 color;
 		vec4_set(&color, static_cast<float>(alpha), static_cast<float>(alpha), static_cast<float>(alpha),
 			 static_cast<float>(alpha));
+		gs_effect_set_float(modeParam_, 0);
 		gs_effect_set_texture(imageParam_, tex.tex);
 		gs_effect_set_vec4(colorParam_, &color);
 		gs_matrix_push();
@@ -1001,6 +1050,35 @@ public:
 		gs_matrix_scale3f(static_cast<float>(tex.at.w * scale / gs_texture_get_width(tex.tex)),
 				  static_cast<float>(tex.at.h * scale / gs_texture_get_height(tex.tex)), 1);
 		gs_draw_sprite(tex.tex, 0, 0, 0);
+		gs_matrix_pop();
+	}
+
+	/** A focus ring (mode 1) or a card's shadow (2) around a box, on the quad around it */
+	void drawShape(float mode, const Box &box, const Box &quad, double x, double y, double scale, uint32_t argb,
+		       double alpha)
+	{
+		if (alpha <= 0.002)
+			return;
+		float a = static_cast<float>(alpha * (argb >> 24) / 255);
+		struct vec4 color, shape;
+		struct vec2 size;
+		vec4_set(&color, a * ((argb >> 16) & 0xff) / 255, a * ((argb >> 8) & 0xff) / 255,
+			 a * (argb & 0xff) / 255, a);
+		vec4_set(&shape, static_cast<float>(box.x - quad.x + box.w / 2),
+			 static_cast<float>(box.y - quad.y + box.h / 2), static_cast<float>(box.w / 2),
+			 static_cast<float>(box.h / 2));
+		vec2_set(&size, static_cast<float>(quad.w), static_cast<float>(quad.h));
+		gs_effect_set_float(modeParam_, mode);
+		gs_effect_set_vec4(colorParam_, &color);
+		gs_effect_set_vec4(shapeParam_, &shape);
+		gs_effect_set_vec2(sizeParam_, &size);
+		gs_effect_set_float(radiusParam_, static_cast<float>(model_->scene.theme.radius / 2));
+		gs_effect_set_float(pxParam_, static_cast<float>(1 / scale));
+		gs_matrix_push();
+		gs_matrix_translate3f(static_cast<float>(x + quad.x * scale), static_cast<float>(y + quad.y * scale),
+				      0);
+		gs_matrix_scale3f(static_cast<float>(quad.w * scale), static_cast<float>(quad.h * scale), 1);
+		gs_draw_sprite(nullptr, 0, 1, 1);
 		gs_matrix_pop();
 	}
 
@@ -1054,7 +1132,18 @@ public:
 					if (e->kind == kSet)
 						dx = -40 * (1 - eased);
 				}
-				drawElement(*e, v.left() + dx * v.scale, v.top(), v.scale, alpha, t);
+				double x = v.left() + dx * v.scale;
+				if (e->kind == kRing) {
+					drawShape(1, m.placed.sets.at(e->id), e->box, x, v.top(), v.scale,
+						  m.focus.color, alpha);
+					continue;
+				}
+				// The cards' shadows, under them once they're painted
+				bool card = e->kind == kSet ||
+					    ((e->kind == kRound || e->kind == kPin) && m.scene.theme.roundNames);
+				if (card && e->tex.tex)
+					drawShape(2, e->box, grow(e->box, 8), x, v.top(), v.scale, 0xff000000, alpha);
+				drawElement(*e, x, v.top(), v.scale, alpha, t);
 			}
 			gs_technique_end_pass(tech);
 			gs_technique_end(tech);
@@ -1125,7 +1214,8 @@ private:
 	bool introPending_ = false;
 	double builtAt_ = 0;
 	gs_effect_t *effect_ = nullptr;
-	gs_eparam_t *imageParam_ = nullptr, *colorParam_ = nullptr;
+	gs_eparam_t *imageParam_ = nullptr, *colorParam_ = nullptr, *modeParam_ = nullptr, *shapeParam_ = nullptr,
+		    *sizeParam_ = nullptr, *radiusParam_ = nullptr, *pxParam_ = nullptr;
 	double frame_ = 0;
 	bool worldDrawn_ = false;
 	gs_texrender_t *world_ = nullptr;
